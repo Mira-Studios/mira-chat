@@ -62,6 +62,13 @@ type Participant = {
   avatar_url?: string;
 };
 
+type Profile = {
+  id: string;
+  username: string;
+  display_name?: string;
+  avatar_url?: string;
+};
+
 export default function ChatPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: chatId } = use(params);
   const [messages, setMessages] = useState<Message[]>([]);
