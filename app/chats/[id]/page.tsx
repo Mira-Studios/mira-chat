@@ -214,9 +214,12 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     };
   }, [chatId, supabase, router]);
 
+  // Scroll to bottom on initial load and when messages change
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (!loading && messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+    }
+  }, [loading, messages]);
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
