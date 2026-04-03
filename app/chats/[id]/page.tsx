@@ -5,6 +5,16 @@ import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import { Send, Users } from "lucide-react";
 
+const MESSAGES_PER_PAGE = 50;
+const MESSAGE_BUFFER = 100; // Keep this many messages loaded at most
+
+type PaginationState = {
+  hasMoreOlder: boolean;
+  hasMoreNewer: boolean;
+  oldestLoadedAt?: string;
+  newestLoadedAt?: string;
+};
+
 type SupabaseParticipant = {
   profiles: {
     id: string;
@@ -54,7 +64,15 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
   const [userId, setUserId] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState("");
   const [loading, setLoading] = useState(true);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [pagination, setPagination] = useState<PaginationState>({
+    hasMoreOlder: true,
+    hasMoreNewer: false,
+  });
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const scrollPositionRef = useRef<number>(0);
+  const isNearBottomRef = useRef(true);
+  const loadedRangeRef = useRef({ start: 0, end: 0 });
   const supabase = createClient();
   const router = useRouter();
 
@@ -102,55 +120,64 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
 
       const { data: messagesData } = await supabase
         .from("messages")
-        .select("*, profiles(username)")
+        .select("*, profiles(username, display_name)")
         .eq("chat_id", chatId)
-        .order("created_at", { ascending: true });
+        .order("created_at", { ascending: false })
+        .limit(MESSAGES_PER_PAGE);
 
-      setMessages(messagesData || []);
+      const orderedMessages = messagesData?.reverse() || [];
+      setMessages(orderedMessages);
+      setPagination({
+        hasMoreOlder: (messagesData?.length || 0) >= MESSAGES_PER_PAGE,
+        hasMoreNewer: false,
+        oldestLoadedAt: orderedMessages[0]?.created_at,
+        newestLoadedAt: orderedMessages[orderedMessages.length - 1]?.created_at,
+      });
       setLoading(false);
     };
 
     fetchChatData();
 
-    // Polling fallback since realtime isn't working
+    // Polling fallback - only poll for new messages
     const pollInterval = setInterval(async () => {
+      if (!pagination.newestLoadedAt) return;
+
       const { data: messagesData } = await supabase
         .from("messages")
         .select("*, profiles(username, display_name)")
         .eq("chat_id", chatId)
+        .gt("created_at", pagination.newestLoadedAt)
         .order("created_at", { ascending: true });
 
-      if (messagesData) {
+      if (messagesData && messagesData.length > 0) {
         setMessages((prev) => {
-          const serverMsgs = messagesData as Message[];
           const currentIds = new Set(prev.map((m) => m.id));
           const currentKeys = new Set(prev.map((m) => m.client_key).filter(Boolean));
           
-          // Add messages from server that aren't already in state
-          // Skip ones that match our optimistic messages by client_key
-          const newMessages = serverMsgs.filter((m) => {
+          const newMessages = (messagesData as Message[]).filter((m) => {
             if (currentIds.has(m.id)) return false;
-            // Skip if this is our message with a matching client_key
             if (m.client_key && currentKeys.has(m.client_key)) return false;
             return true;
           });
           
-          // Replace optimistic messages with real ones by client_key
-          const updated = prev.map((m) => {
-            if (m.id.startsWith("temp-") && m.client_key) {
-              const realMatch = serverMsgs.find(
-                (s) => s.client_key === m.client_key
-              );
-              if (realMatch) {
-                return { ...realMatch, profiles: { username: "You" } };
-              }
-            }
-            return m;
-          });
+          if (newMessages.length === 0) return prev;
           
-          if (newMessages.length > 0) {
-            return [...updated, ...newMessages];
+          const updated = [...prev, ...newMessages];
+          // Trim if exceeds buffer while not viewing older messages
+          if (updated.length > MESSAGE_BUFFER && isNearBottomRef.current) {
+            const trimmed = updated.slice(updated.length - MESSAGE_BUFFER);
+            setPagination(p => ({
+              ...p,
+              hasMoreOlder: true,
+              oldestLoadedAt: trimmed[0]?.created_at,
+            }));
+            return trimmed;
           }
+          
+          setPagination(p => ({
+            ...p,
+            newestLoadedAt: newMessages[newMessages.length - 1]?.created_at,
+          }));
           return updated;
         });
       }
@@ -213,12 +240,108 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     };
   }, [chatId, supabase, router]);
 
-  // Scroll to bottom on initial load and when messages change
+  // Scroll to bottom on initial load
   useEffect(() => {
-    if (!loading && messages.length > 0) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+    if (!loading && messages.length > 0 && isNearBottomRef.current) {
+      messagesContainerRef.current?.scrollTo({
+        top: messagesContainerRef.current.scrollHeight,
+        behavior: "auto",
+      });
     }
-  }, [loading, messages]);
+  }, [loading, messages.length]);
+
+  const loadOlderMessages = async () => {
+    if (!pagination.oldestLoadedAt || isLoadingOlder || !pagination.hasMoreOlder) return;
+    
+    setIsLoadingOlder(true);
+    const container = messagesContainerRef.current;
+    const oldScrollHeight = container?.scrollHeight || 0;
+    const oldScrollTop = container?.scrollTop || 0;
+
+    const { data: olderMessages } = await supabase
+      .from("messages")
+      .select("*, profiles(username, display_name)")
+      .eq("chat_id", chatId)
+      .lt("created_at", pagination.oldestLoadedAt)
+      .order("created_at", { ascending: false })
+      .limit(MESSAGES_PER_PAGE);
+
+    if (olderMessages && olderMessages.length > 0) {
+      const ordered = olderMessages.reverse();
+      setMessages((prev) => {
+        const combined = [...ordered, ...prev];
+        // Trim from bottom if we exceed buffer and were near bottom
+        if (combined.length > MESSAGE_BUFFER && isNearBottomRef.current) {
+          const trimmed = combined.slice(0, MESSAGE_BUFFER);
+          setPagination(p => ({
+            ...p,
+            hasMoreOlder: olderMessages.length >= MESSAGES_PER_PAGE,
+            hasMoreNewer: true,
+            oldestLoadedAt: trimmed[0]?.created_at,
+            newestLoadedAt: trimmed[trimmed.length - 1]?.created_at,
+          }));
+          return trimmed;
+        }
+        setPagination(p => ({
+          ...p,
+          hasMoreOlder: olderMessages.length >= MESSAGES_PER_PAGE,
+          hasMoreNewer: true,
+          oldestLoadedAt: ordered[0]?.created_at,
+        }));
+        return combined;
+      });
+
+      // Restore scroll position after older messages load
+      requestAnimationFrame(() => {
+        if (container) {
+          const newScrollHeight = container.scrollHeight;
+          const heightAdded = newScrollHeight - oldScrollHeight;
+          container.scrollTop = oldScrollTop + heightAdded;
+        }
+      });
+    } else {
+      setPagination(p => ({ ...p, hasMoreOlder: false }));
+    }
+    setIsLoadingOlder(false);
+  };
+
+  const unloadOlderMessages = () => {
+    if (messages.length <= MESSAGE_BUFFER) return;
+    
+    const keepCount = Math.floor(MESSAGE_BUFFER * 0.7); // Keep 70% of buffer
+    const toUnload = messages.length - keepCount;
+    
+    if (toUnload > 0) {
+      const trimmed = messages.slice(toUnload);
+      setMessages(trimmed);
+      setPagination(p => ({
+        ...p,
+        hasMoreOlder: true,
+        oldestLoadedAt: trimmed[0]?.created_at,
+      }));
+    }
+  };
+
+  const handleScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isNearTop = scrollTop < 100;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+    
+    isNearBottomRef.current = isNearBottom;
+    scrollPositionRef.current = scrollTop;
+
+    if (isNearTop && pagination.hasMoreOlder && !isLoadingOlder) {
+      loadOlderMessages();
+    }
+    
+    // Unload older messages when scrolling far down and have many loaded
+    if (isNearBottom && messages.length > MESSAGE_BUFFER * 1.2) {
+      unloadOlderMessages();
+    }
+  };
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -289,7 +412,21 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
         </div>
         <div className="bg-card border-x border-border flex-1 flex flex-col overflow-hidden">
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div 
+            ref={messagesContainerRef}
+            onScroll={handleScroll}
+            className="flex-1 overflow-y-auto p-4 space-y-4"
+          >
+            {isLoadingOlder && (
+              <div className="flex justify-center py-2">
+                <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
+            {!isLoadingOlder && pagination.hasMoreOlder && messages.length > 0 && (
+              <div className="flex justify-center py-2 text-xs text-muted">
+                Scroll up to load more
+              </div>
+            )}
             {messages.length === 0 ? (
               <div className="text-center text-muted py-12">
                 <div className="w-16 h-16 bg-border rounded-full flex items-center justify-center mx-auto mb-4">
@@ -330,7 +467,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
                 );
               })
             )}
-            <div ref={messagesEndRef} />
+            <div />
           </div>
         </div>
 
