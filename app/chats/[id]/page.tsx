@@ -718,7 +718,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
                               </div>
                             </div>
                           )}
-                            <div className="leading-relaxed text-foreground">
+                            <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">
                               {message.content}
                             </div>
                           </div>
@@ -745,7 +745,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
                               </div>
                             </div>
                           )}
-                          <div className="leading-relaxed text-foreground">{message.content}</div>
+                          <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere max-w-full">{message.content}</div>
                         </div>
                       </div>
                     );
@@ -804,7 +804,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
                             </div>
                           </div>
                         )}
-                        <div className="leading-relaxed text-foreground">
+                        <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">
                           {message.content}
                         </div>
                       </div>
