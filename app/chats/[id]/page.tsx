@@ -7,6 +7,8 @@ import { Send, Users } from "lucide-react";
 
 const MESSAGES_PER_PAGE = 50;
 const MESSAGE_BUFFER = 100; // Keep this many messages loaded at most
+const CONSECUTIVE_MESSAGE_THRESHOLD = 3 * 60 * 1000; // 3 minutes in milliseconds
+const TIME_DISPLAY_THRESHOLD = 2 * 60 * 1000; // 2 minutes in milliseconds
 
 type PaginationState = {
   hasMoreOlder: boolean;
@@ -435,32 +437,73 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
                 <p>No messages yet. Say hello!</p>
               </div>
             ) : (
-              messages.map((message) => {
+              messages.map((message, index) => {
                 const isMe = message.sender_id === userId;
+                const prevMessage = index > 0 ? messages[index - 1] : null;
+                const shouldShowProfile = !isMe && (
+                  !prevMessage || 
+                  prevMessage.sender_id !== message.sender_id ||
+                  new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime() > CONSECUTIVE_MESSAGE_THRESHOLD
+                );
+                
+                const shouldShowTime = !prevMessage || 
+                  prevMessage.sender_id !== message.sender_id ||
+                  new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime() > TIME_DISPLAY_THRESHOLD;
+                
+                if (isMe) {
+                  return (
+                    <div
+                      key={message.id}
+                      className="flex justify-end"
+                    >
+                      <div className="max-w-[80%] rounded-2xl px-4 py-2.5 bg-accent text-white rounded-br-md">
+                        <div className="leading-relaxed">{message.content}</div>
+                        {shouldShowTime && (
+                          <div className="text-xs mt-1 text-white/60">
+                            {formatTime(message.created_at)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+                
                 return (
                   <div
                     key={message.id}
-                    className={`flex ${isMe ? "justify-end" : "justify-start"}`}
+                    className="flex justify-start"
                   >
-                    <div
-                      className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${
-                        isMe
-                          ? "bg-accent text-white rounded-br-md"
-                          : "bg-border text-foreground rounded-bl-md"
-                      }`}
-                    >
-                      {!isMe && (
-                        <div className="text-xs font-medium text-accent mb-1">
-                          {message.profiles.display_name || `@${message.profiles.username}`}
+                    <div className="flex gap-3 max-w-[80%]">
+                      {shouldShowProfile && (
+                        <div className="w-8 h-8 bg-border rounded-full flex items-center justify-center flex-shrink-0">
+                          <span className="text-xs font-medium text-foreground">
+                            {(message.profiles.display_name || message.profiles.username).charAt(0).toUpperCase()}
+                          </span>
                         </div>
                       )}
-                      <div className="leading-relaxed">{message.content}</div>
-                      <div
-                        className={`text-xs mt-1 ${
-                          isMe ? "text-white/60" : "text-muted"
-                        }`}
-                      >
-                        {formatTime(message.created_at)}
+                      {!shouldShowProfile && <div className="w-8 flex-shrink-0" />}
+                      
+                      <div className="flex-1 min-w-0">
+                        {shouldShowProfile && (
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="text-sm font-medium text-foreground">
+                              {message.profiles.display_name || `@${message.profiles.username}`}
+                            </div>
+                            {shouldShowTime && (
+                              <div className="text-xs text-muted ml-2">
+                                {formatTime(message.created_at)}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {!shouldShowProfile && shouldShowTime && (
+                          <div className="text-xs text-muted mb-1">
+                            {formatTime(message.created_at)}
+                          </div>
+                        )}
+                        <div className="bg-border text-foreground rounded-2xl rounded-bl-md px-4 py-2.5 leading-relaxed">
+                          {message.content}
+                        </div>
                       </div>
                     </div>
                   </div>
