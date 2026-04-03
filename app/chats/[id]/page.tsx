@@ -121,8 +121,12 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
 
       if (messagesData) {
         setMessages((prev) => {
-          if (messagesData.length !== prev.length) {
-            return messagesData as Message[];
+          // Filter out optimistic messages when comparing
+          const realPrevCount = prev.filter((m) => !m.id.startsWith("temp-")).length;
+          if (messagesData.length !== realPrevCount) {
+            // Merge: keep existing real messages, replace optimistic with real data
+            const optimisticMsgs = prev.filter((m) => m.id.startsWith("temp-"));
+            return [...(messagesData as Message[]), ...optimisticMsgs];
           }
           return prev;
         });
