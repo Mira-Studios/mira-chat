@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
-import { MessageSquare, Plus, ChevronRight, LogOut, X } from "lucide-react";
+import { MessageSquare, Plus, ChevronRight, LogOut, X, Settings } from "lucide-react";
 
 type Profile = {
   id: string;
   username: string;
   display_name?: string;
+  avatar_url?: string;
 };
 
 type Chat = {
@@ -27,7 +28,22 @@ export default function ChatsLayout({
   const [user, setUser] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [messageLayout, setMessageLayout] = useState<"default" | "left">(() => {
+    const savedLayout = typeof window !== 'undefined' ? localStorage.getItem("messageLayout") as "default" | "left" : "default";
+    return (savedLayout === "default" || savedLayout === "left") ? savedLayout : "default";
+  });
   const [searchQuery, setSearchQuery] = useState("");
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [editUsername, setEditUsername] = useState("");
+  const [editDisplayName, setEditDisplayName] = useState("");
+  const [editProfilePicture, setEditProfilePicture] = useState("");
+  const [uploadingPfp, setUploadingPfp] = useState(false);
+
+  // Save message layout preference to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem("messageLayout", messageLayout);
+  }, [messageLayout]);
   const [searchResults, setSearchResults] = useState<Profile[]>([]);
   const [selectedUsers, setSelectedUsers] = useState<Profile[]>([]);
   const [chatName, setChatName] = useState("");
@@ -36,6 +52,11 @@ export default function ChatsLayout({
   const currentChatId = params?.id as string | undefined;
   const supabase = createClient();
   const router = useRouter();
+
+  // Pass messageLayout to children via cloneElement for the chat page
+  const childrenWithProps = React.isValidElement(children) 
+    ? React.cloneElement(children, { messageLayout } as any)
+    : children;
 
   useEffect(() => {
     const fetchUserAndChats = async () => {
@@ -47,7 +68,7 @@ export default function ChatsLayout({
 
       const { data: profileData } = await supabase
         .from("profiles")
-        .select("id, username, display_name")
+        .select("id, username, display_name, avatar_url")
         .eq("id", authUser.id)
         .single();
       
@@ -112,6 +133,69 @@ export default function ChatsLayout({
     setChatName("");
     setSearchQuery("");
     setSearchResults([]);
+  };
+
+  const handleEditProfile = () => {
+    setEditUsername(user?.username || "");
+    setEditDisplayName(user?.display_name || "");
+    setEditProfilePicture("");
+    setEditingProfile(true);
+  };
+
+  const handlePfpUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type and size
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file');
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) { // 5MB limit
+      alert('Image size must be less than 5MB');
+      return;
+    }
+
+    setUploadingPfp(true);
+
+    try {
+      // Create a preview
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setEditProfilePicture(e.target?.result as string);
+        setUploadingPfp(false);
+      };
+      reader.readAsDataURL(file);
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      setUploadingPfp(false);
+    }
+  };
+
+  const saveProfile = async () => {
+    if (!user) return;
+    
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        username: editUsername,
+        display_name: editDisplayName || null,
+        avatar_url: editProfilePicture || null,
+      })
+      .eq("id", user.id);
+
+    if (error) {
+      console.error("Error updating profile:", error);
+      return;
+    }
+
+    setUser({
+      ...user,
+      username: editUsername,
+      display_name: editDisplayName || undefined,
+    });
+    setEditingProfile(false);
   };
 
   useEffect(() => {
@@ -214,24 +298,16 @@ export default function ChatsLayout({
       <div className="w-80 bg-card border-r border-border flex flex-col shrink-0">
         {/* Header */}
         <div className="p-4 border-b border-border">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 bg-accent rounded-xl flex items-center justify-center">
-              <MessageSquare className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold text-foreground">Chats</h1>
-              <p className="text-xs text-muted">
-                @{user?.username}
-              </p>
-            </div>
+          <div className="flex items-center justify-between">
+            <h1 className="text-lg font-semibold text-foreground">Chats</h1>
+            <button
+              onClick={handleNewChat}
+              className="p-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+              title="New Chat"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
           </div>
-          <button
-            onClick={handleNewChat}
-            className="w-full py-2.5 bg-accent hover:bg-accent-hover text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
-          >
-            <Plus className="w-4 h-4" />
-            New Chat
-          </button>
         </div>
 
         {/* Chat List */}
@@ -262,11 +338,31 @@ export default function ChatsLayout({
                     }`}
                   >
                     <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium shrink-0 ${
-                        isActive ? "bg-accent text-white" : "bg-border text-foreground"
-                      }`}>
-                        {avatarLetter}
-                      </div>
+                      {otherUsers.length === 1 ? (
+                        // One-on-one chat - show the other person's profile picture
+                        otherUsers[0].avatar_url ? (
+                          <img 
+                            src={otherUsers[0].avatar_url} 
+                            alt="Profile" 
+                            className={`w-10 h-10 rounded-full object-cover shrink-0 ${
+                              isActive ? "ring-2 ring-accent" : ""
+                            }`}
+                          />
+                        ) : (
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium shrink-0 ${
+                            isActive ? "bg-accent text-white" : "bg-border text-foreground"
+                          }`}>
+                            {(otherUsers[0].display_name || otherUsers[0].username || "?").charAt(0).toUpperCase()}
+                          </div>
+                        )
+                      ) : (
+                        // Group chat or no other users - show chat initial
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium shrink-0 ${
+                          isActive ? "bg-accent text-white" : "bg-border text-foreground"
+                        }`}>
+                          {avatarLetter}
+                        </div>
+                      )}
                       <div className="flex-1 min-w-0">
                         <div className={`font-medium truncate ${
                           isActive ? "text-accent" : "text-foreground"
@@ -290,21 +386,53 @@ export default function ChatsLayout({
           )}
         </div>
 
-        {/* Footer */}
+        {/* Footer - Profile Section */}
         <div className="p-4 border-t border-border">
-          <button
-            onClick={signOut}
-            className="w-full py-2 text-sm text-muted hover:text-foreground transition-colors flex items-center justify-center gap-2"
-          >
-            <LogOut className="w-4 h-4" />
-            Sign out
-          </button>
+          <div className="flex items-center gap-3">
+            {user?.avatar_url ? (
+              <img 
+                src={user.avatar_url} 
+                alt="Profile" 
+                className="w-10 h-10 rounded-full object-cover flex-shrink-0"
+              />
+            ) : (
+              <div className="w-10 h-10 bg-border rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-sm font-medium text-foreground">
+                  {(user?.display_name || user?.username || "?").charAt(0).toUpperCase()}
+                </span>
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="font-medium text-foreground truncate">
+                {user?.display_name || `@${user?.username}`}
+              </div>
+              <div className="text-xs text-muted truncate">
+                @{user?.username}
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowSettingsModal(true)}
+                className="p-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+                title="Settings"
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+              <button
+                onClick={signOut}
+                className="p-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+                title="Sign out"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
-        {children}
+        {childrenWithProps}
       </div>
 
       {/* Create Chat Modal */}
@@ -411,6 +539,208 @@ export default function ChatsLayout({
               >
                 {isCreating ? "Creating..." : "Create Chat"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+          onClick={() => setShowSettingsModal(false)}
+        >
+          <div 
+            className="bg-card border border-border rounded-2xl w-full max-w-md max-h-[80vh] overflow-hidden shadow-2xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
+              <h2 className="text-lg font-semibold text-foreground">Settings</h2>
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="text-muted hover:text-foreground transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4 overflow-y-auto flex-1">
+              {/* Profile Section */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-foreground">Profile</h3>
+                  {!editingProfile && (
+                    <button
+                      onClick={handleEditProfile}
+                      className="text-xs text-accent hover:text-accent-hover transition-colors"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+                
+                {!editingProfile ? (
+                  <div className="flex items-center gap-3 p-3 bg-background border border-border rounded-lg">
+                    {user?.avatar_url ? (
+                      <img 
+                        src={user.avatar_url} 
+                        alt="Profile" 
+                        className="w-12 h-12 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 bg-border rounded-full flex items-center justify-center">
+                        <span className="text-lg font-medium text-foreground">
+                          {(user?.display_name || user?.username || "?").charAt(0).toUpperCase()}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex-1">
+                      <div className="font-medium text-foreground">
+                        {user?.display_name || `@${user?.username}`}
+                      </div>
+                      <div className="text-sm text-muted">
+                        @{user?.username}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3 p-3 bg-background border border-border rounded-lg">
+                      <div className="relative">
+                        {editProfilePicture ? (
+                          <img 
+                            src={editProfilePicture} 
+                            alt="Profile" 
+                            className="w-12 h-12 rounded-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 bg-accent rounded-full flex items-center justify-center">
+                            <span className="text-lg font-medium text-white">
+                              {(editDisplayName || editUsername || "?").charAt(0).toUpperCase()}
+                            </span>
+                          </div>
+                        )}
+                        <label className="absolute -bottom-1 -right-1 w-6 h-6 bg-accent hover:bg-accent-hover rounded-full flex items-center justify-center cursor-pointer transition-colors">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handlePfpUpload}
+                            className="hidden"
+                            disabled={uploadingPfp}
+                          />
+                          {uploadingPfp ? (
+                            <div className="w-3 h-3 border border-white/30 border-t-transparent rounded-full animate-spin"></div>
+                          ) : (
+                            <Plus className="w-3 h-3 text-white" />
+                          )}
+                        </label>
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-medium text-foreground">
+                          {editDisplayName || `@${editUsername}`}
+                        </div>
+                        <div className="text-sm text-muted">
+                          @{editUsername}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-foreground mb-1.5">
+                        Username
+                      </label>
+                      <input
+                        type="text"
+                        value={editUsername}
+                        onChange={(e) => setEditUsername(e.target.value)}
+                        className="w-full px-3 py-2.5 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent text-foreground placeholder:text-muted transition-all"
+                        placeholder="username"
+                      />
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-foreground mb-1.5">
+                        Display Name (optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={editDisplayName}
+                        onChange={(e) => setEditDisplayName(e.target.value)}
+                        className="w-full px-3 py-2.5 bg-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent text-foreground placeholder:text-muted transition-all"
+                        placeholder="Your display name"
+                      />
+                    </div>
+                    
+                    <div className="flex gap-2">
+                      <button
+                        onClick={saveProfile}
+                        className="flex-1 py-2.5 bg-accent hover:bg-accent-hover text-white font-medium rounded-lg transition-colors"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setEditingProfile(false)}
+                        className="flex-1 py-2.5 bg-background border border-border hover:bg-card-hover text-foreground font-medium rounded-lg transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Appearance Section */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-foreground">Appearance</h3>
+                <div className="space-y-2">
+                  <label className="flex items-center justify-between p-3 bg-background border border-border rounded-lg cursor-pointer hover:bg-card-hover transition-colors">
+                    <span className="text-sm text-foreground">Dark Mode</span>
+                    <div className="w-12 h-6 bg-accent rounded-full relative">
+                      <div className="absolute right-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform"></div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Message Layout Section */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-foreground">Message Layout</h3>
+                <div className="space-y-2">
+                  <select
+                    value={messageLayout}
+                    onChange={(e) => setMessageLayout(e.target.value as "default" | "left")}
+                    className="w-full p-3 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-accent transition-all"
+                  >
+                    <option value="default">Default Layout - Your messages on the right, others on the left</option>
+                    <option value="left">Left Aligned - All messages on the left side</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Notifications Section */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-foreground">Notifications</h3>
+                <div className="space-y-2">
+                  <label className="flex items-center justify-between p-3 bg-background border border-border rounded-lg cursor-pointer hover:bg-card-hover transition-colors">
+                    <span className="text-sm text-foreground">Message Notifications</span>
+                    <div className="w-12 h-6 bg-accent rounded-full relative">
+                      <div className="absolute right-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform"></div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Account Section */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-foreground">Account</h3>
+                <button
+                  onClick={signOut}
+                  className="w-full p-3 bg-background border border-border rounded-lg text-left hover:bg-card-hover transition-colors flex items-center gap-3"
+                >
+                  <LogOut className="w-4 h-4 text-muted" />
+                  <span className="text-sm text-foreground">Sign Out</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
