@@ -131,18 +131,30 @@ export default function ChatsPage() {
       return;
     }
 
-    const participantInserts = allParticipants.map((p) => ({
-      chat_id: chat.id,
-      user_id: p.id,
-    }));
+    // Insert creator first (required by RLS policy), then others
+    const creator = allParticipants.find((p) => p.id === user?.id);
+    const others = allParticipants.filter((p) => p.id !== user?.id);
 
-    const { error: participantsError } = await supabase
-      .from("chat_participants")
-      .insert(participantInserts);
+    if (creator) {
+      const { error: creatorError } = await supabase
+        .from("chat_participants")
+        .insert({ chat_id: chat.id, user_id: creator.id });
 
-    if (participantsError) {
-      console.error("Error adding participants:", participantsError);
-      return;
+      if (creatorError) {
+        console.error("Error adding creator:", creatorError);
+        return;
+      }
+    }
+
+    if (others.length > 0) {
+      const { error: othersError } = await supabase
+        .from("chat_participants")
+        .insert(others.map((p) => ({ chat_id: chat.id, user_id: p.id })));
+
+      if (othersError) {
+        console.error("Error adding participants:", othersError);
+        return;
+      }
     }
 
     setShowCreateModal(false);
