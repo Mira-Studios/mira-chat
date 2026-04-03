@@ -2,9 +2,25 @@
 
 import React, { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { useRouter, useParams } from "next/navigation";
+import { useRouter, useParams, usePathname } from "next/navigation";
 import Link from "next/link";
-import { MessageSquare, Plus, ChevronRight, LogOut, X, Settings } from "lucide-react";
+import { MessageSquare, Plus, ChevronRight, LogOut, X, Settings, ArrowLeft } from "lucide-react";
+
+// Hook to detect mobile viewport
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
+  return isMobile;
+}
 
 type Profile = {
   id: string;
@@ -39,6 +55,13 @@ export default function ChatsLayout({
   const [editDisplayName, setEditDisplayName] = useState("");
   const [editProfilePicture, setEditProfilePicture] = useState("");
   const [uploadingPfp, setUploadingPfp] = useState(false);
+  const isMobile = useIsMobile();
+  const pathname = usePathname();
+
+  // On mobile, show sidebar only on /chats, show chat on /chats/[id]
+  const isChatListView = pathname === "/chats";
+  const showSidebar = !isMobile || isChatListView;
+  const showMainContent = !isMobile || !isChatListView;
 
   // Save message layout preference to localStorage when it changes
   useEffect(() => {
@@ -294,8 +317,8 @@ export default function ChatsLayout({
 
   return (
     <div className="min-h-screen bg-background flex">
-      {/* Sidebar */}
-      <div className="w-80 bg-card border-r border-border flex flex-col shrink-0">
+      {/* Sidebar - Hidden on mobile when viewing a chat */}
+      <div className={`${showSidebar ? 'flex' : 'hidden md:flex'} w-full md:w-80 bg-card border-r border-border flex-col shrink-0`}>
         {/* Header */}
         <div className="p-4 border-b border-border">
           <div className="flex items-center justify-between">
@@ -430,26 +453,34 @@ export default function ChatsLayout({
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* Main Content - Hidden on mobile when viewing chat list */}
+      <div className={`${showMainContent ? 'flex' : 'hidden md:flex'} flex-1 flex flex-col min-w-0`}>
         {childrenWithProps}
       </div>
 
       {/* Create Chat Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-card border border-border rounded-2xl w-full max-w-md max-h-[80vh] overflow-hidden shadow-2xl">
-            <div className="p-4 border-b border-border flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-foreground">New Chat</h2>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start md:items-center justify-center z-50 md:p-4">
+          <div className="bg-card border-0 md:border md:border-border md:rounded-2xl w-full h-full md:h-auto md:max-w-md md:max-h-[80vh] overflow-hidden shadow-2xl flex flex-col">
+            <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={closeModal}
+                  className="md:hidden p-2 -ml-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-semibold text-foreground">New Chat</h2>
+              </div>
               <button
                 onClick={closeModal}
-                className="text-muted hover:text-foreground transition-colors"
+                className="hidden md:block text-muted hover:text-foreground transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-4 space-y-4 overflow-y-auto max-h-[60vh]">
+            <div className="p-4 space-y-4 overflow-y-auto flex-1">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1.5">
                   Chat Name (optional)
@@ -547,18 +578,26 @@ export default function ChatsLayout({
       {/* Settings Modal */}
       {showSettingsModal && (
         <div 
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start md:items-center justify-center z-50 md:p-4"
           onClick={() => setShowSettingsModal(false)}
         >
           <div 
-            className="bg-card border border-border rounded-2xl w-full max-w-md max-h-[80vh] overflow-hidden shadow-2xl flex flex-col"
+            className="bg-card border-0 md:border md:border-border md:rounded-2xl w-full h-full md:h-auto md:max-w-md md:max-h-[80vh] overflow-hidden shadow-2xl flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
-              <h2 className="text-lg font-semibold text-foreground">Settings</h2>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowSettingsModal(false)}
+                  className="md:hidden p-2 -ml-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-semibold text-foreground">Settings</h2>
+              </div>
               <button
                 onClick={() => setShowSettingsModal(false)}
-                className="text-muted hover:text-foreground transition-colors"
+                className="hidden md:block text-muted hover:text-foreground transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>

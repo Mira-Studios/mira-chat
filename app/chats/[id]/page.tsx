@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, use } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter, useParams } from "next/navigation";
-import { Send, Users, Settings, X, Plus, UserMinus, UserPlus } from "lucide-react";
+import { Send, Users, Settings, X, Plus, UserMinus, UserPlus, ArrowLeft } from "lucide-react";
 
 const MESSAGES_PER_PAGE = 50;
 const MESSAGE_BUFFER = 100; // Keep this many messages loaded at most
@@ -592,6 +592,12 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       <div className="flex-1 flex flex-col w-full min-h-0">
         <div className="shrink-0 bg-card/95 backdrop-blur-sm border-t border-border z-50">
           <div className="p-4 border-b border-border flex items-center gap-4">
+            <button
+              onClick={() => router.push("/chats")}
+              className="md:hidden p-2 -ml-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
             <div className="flex-1 min-w-0">
               <h1 className="font-semibold text-foreground truncate">{chatTitle}</h1>
               <div className="flex items-center gap-1 text-sm text-muted">
@@ -835,18 +841,26 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       {/* Group Settings Modal */}
       {showGroupSettings && (
         <div 
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start md:items-center justify-center z-50 md:p-4"
           onClick={() => setShowGroupSettings(false)}
         >
           <div 
-            className="bg-card border border-border rounded-2xl w-full max-w-md max-h-[80vh] overflow-hidden shadow-2xl flex flex-col"
+            className="bg-card border-0 md:border md:border-border md:rounded-2xl w-full h-full md:h-auto md:max-w-md md:max-h-[80vh] overflow-hidden shadow-2xl flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
-              <h2 className="text-lg font-semibold text-foreground">Group Settings</h2>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowGroupSettings(false)}
+                  className="md:hidden p-2 -ml-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-lg font-semibold text-foreground">Group Settings</h2>
+              </div>
               <button
                 onClick={() => setShowGroupSettings(false)}
-                className="text-muted hover:text-foreground transition-colors"
+                className="hidden md:block text-muted hover:text-foreground transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
