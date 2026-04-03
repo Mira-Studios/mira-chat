@@ -20,6 +20,7 @@ type SupabaseMessage = {
   content: string;
   sender_id: string;
   created_at: string;
+  client_key?: string;
 };
 
 type Message = {
@@ -28,6 +29,7 @@ type Message = {
   content: string;
   sender_id: string;
   created_at: string;
+  client_key?: string;
   profiles: {
     username: string;
     display_name?: string;
@@ -121,14 +123,36 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
 
       if (messagesData) {
         setMessages((prev) => {
-          // Filter out optimistic messages when comparing
-          const realPrevCount = prev.filter((m) => !m.id.startsWith("temp-")).length;
-          if (messagesData.length !== realPrevCount) {
-            // Merge: keep existing real messages, replace optimistic with real data
-            const optimisticMsgs = prev.filter((m) => m.id.startsWith("temp-"));
-            return [...(messagesData as Message[]), ...optimisticMsgs];
+          const serverMsgs = messagesData as Message[];
+          const currentIds = new Set(prev.map((m) => m.id));
+          const currentKeys = new Set(prev.map((m) => m.client_key).filter(Boolean));
+          
+          // Add messages from server that aren't already in state
+          // Skip ones that match our optimistic messages by client_key
+          const newMessages = serverMsgs.filter((m) => {
+            if (currentIds.has(m.id)) return false;
+            // Skip if this is our message with a matching client_key
+            if (m.client_key && currentKeys.has(m.client_key)) return false;
+            return true;
+          });
+          
+          // Replace optimistic messages with real ones by client_key
+          const updated = prev.map((m) => {
+            if (m.id.startsWith("temp-") && m.client_key) {
+              const realMatch = serverMsgs.find(
+                (s) => s.client_key === m.client_key
+              );
+              if (realMatch) {
+                return { ...realMatch, profiles: { username: "You" } };
+              }
+            }
+            return m;
+          });
+          
+          if (newMessages.length > 0) {
+            return [...updated, ...newMessages];
           }
-          return prev;
+          return updated;
         });
       }
     }, 2000);
@@ -161,7 +185,23 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
             },
           };
 
-          setMessages((prev) => [...prev, newMsg]);
+          setMessages((prev) => {
+            // If this is our message with a matching client_key, replace the optimistic one
+            if (msg.client_key) {
+              const hasOptimistic = prev.some(
+                (m) => m.client_key === msg.client_key && m.id.startsWith("temp-")
+              );
+              if (hasOptimistic) {
+                return prev.map((m) =>
+                  m.client_key === msg.client_key
+                    ? { ...newMsg, profiles: { username: "You" } }
+                    : m
+                );
+              }
+            }
+            // Otherwise just add it (from other users)
+            return [...prev, newMsg];
+          });
         }
       )
       .subscribe((status) => {
@@ -186,38 +226,30 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     setNewMessage("");
 
     // Optimistically add message to UI
+    const clientKey = `ck-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const optimisticId = `temp-${Date.now()}`;
     const optimisticMsg: Message = {
-      id: `temp-${Date.now()}`,
+      id: optimisticId,
       chat_id: chatId,
       content,
       sender_id: userId,
       created_at: new Date().toISOString(),
+      client_key: clientKey,
       profiles: { username: "You" },
     };
     setMessages((prev) => [...prev, optimisticMsg]);
 
-    const { data, error } = await supabase.from("messages").insert({
+    const { error } = await supabase.from("messages").insert({
       chat_id: chatId,
       sender_id: userId,
       content,
-    }).select().single();
+      client_key: clientKey,
+    });
 
     if (error) {
       console.error("Error sending message:", error);
       // Remove optimistic message on error
-      setMessages((prev) => prev.filter((m) => m.id !== optimisticMsg.id));
-      return;
-    }
-
-    // Replace optimistic message with real one
-    if (data) {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === optimisticMsg.id
-            ? { ...data, profiles: { username: "You" } } as Message
-            : m
-        )
-      );
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
     }
   };
 
