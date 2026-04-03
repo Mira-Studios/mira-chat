@@ -3,8 +3,7 @@
 import { useEffect, useState, useRef, use } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { ArrowLeft, Send, Users } from "lucide-react";
+import { Send, Users } from "lucide-react";
 
 type SupabaseParticipant = {
   profiles: {
@@ -268,23 +267,17 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="flex-1 flex items-center justify-center bg-background">
         <div className="text-muted">Loading...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      <div className="max-w-2xl mx-auto w-full flex-1 flex flex-col">
-        <div className="sticky top-0 bg-card/95 backdrop-blur-sm border-x border-t border-border z-50">
+    <div className="h-screen flex flex-col bg-background overflow-hidden">
+      <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
+        <div className="shrink-0 bg-card/95 backdrop-blur-sm border-x border-t border-border z-50">
           <div className="p-4 border-b border-border flex items-center gap-4">
-            <Link
-              href="/chats"
-              className="text-muted hover:text-foreground transition-colors p-1 hover:bg-border rounded-lg"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </Link>
             <div className="flex-1 min-w-0">
               <h1 className="font-semibold text-foreground truncate">{chatTitle}</h1>
               <div className="flex items-center gap-1 text-sm text-muted">
