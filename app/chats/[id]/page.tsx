@@ -1842,10 +1842,10 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
               <button
                 type="submit"
                 disabled={(!newMessage.trim() && attachedFiles.length === 0) || isUploading}
-                className="px-4 py-3 bg-accent hover:bg-accent-hover text-white font-medium rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                className="md:hidden px-4 py-3 bg-accent hover:bg-accent-hover text-white font-medium rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 <Send className="w-4 h-4" />
-                <span className="hidden sm:inline">Send</span>
+                <span>Send</span>
               </button>
             </div>
           </form>
