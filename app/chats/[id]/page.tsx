@@ -1,14 +1,49 @@
 "use client";
 
-import { useEffect, useState, useRef, use } from "react";
+import { useEffect, useState, useRef, use, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter, useParams } from "next/navigation";
-import { Send, Users, Settings, X, Plus, UserMinus, UserPlus, ArrowLeft } from "lucide-react";
+import { Send, Users, Settings, X, Plus, UserMinus, UserPlus, ArrowLeft, MoreVertical, Smile, Trash2, Edit2, Check, X as XIcon, Reply } from "lucide-react";
 
 const MESSAGES_PER_PAGE = 50;
 const MESSAGE_BUFFER = 100; // Keep this many messages loaded at most
 const CONSECUTIVE_MESSAGE_THRESHOLD = 3 * 60 * 1000; // 3 minutes in milliseconds
 const TIME_DISPLAY_THRESHOLD = 2 * 60 * 1000; // 2 minutes in milliseconds
+
+// Long press detection hook - must be at module level
+function useLongPress(
+  callback: () => void,
+  onTouchStart?: (e: React.TouchEvent) => void
+) {
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const start = useCallback((e: React.TouchEvent) => {
+    onTouchStart?.(e);
+    timerRef.current = setTimeout(() => {
+      callback();
+    }, 500);
+  }, [callback, onTouchStart]);
+
+  const end = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const move = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  return {
+    onTouchStart: start,
+    onTouchEnd: end,
+    onTouchMove: move,
+  };
+}
 
 type PaginationState = {
   hasMoreOlder: boolean;
@@ -41,6 +76,8 @@ type Message = {
   content: string;
   sender_id: string;
   created_at: string;
+  edited_at?: string;
+  reply_to?: string;
   client_key?: string;
   profiles: {
     username: string;
@@ -69,6 +106,368 @@ type Profile = {
   avatar_url?: string;
 };
 
+// Separate Message component to properly use hooks
+interface MessageItemProps {
+  message: Message;
+  index: number;
+  messages: Message[];
+  userId: string | null;
+  myProfile: Participant | undefined;
+  messageLayout: "default" | "left";
+  selectedMessageId: string | null;
+  editingMessageId: string | null;
+  editMessageContent: string;
+  showMessageMenu: string | null;
+  onSelectMessage: (id: string, isMe: boolean) => void;
+  onStartEdit: (message: Message) => void;
+  onStartReply: (message: Message) => void;
+  onSaveEdit: () => void;
+  onCancelEdit: () => void;
+  onDelete: (id: string) => void;
+  onSetEditContent: (content: string) => void;
+  onToggleMenu: (id: string, isOpen: boolean) => void;
+  formatTime: (date: string) => string;
+}
+
+function MessageItem({
+  message,
+  index,
+  messages,
+  userId,
+  myProfile,
+  messageLayout,
+  selectedMessageId,
+  editingMessageId,
+  editMessageContent,
+  showMessageMenu,
+  onSelectMessage,
+  onStartEdit,
+  onStartReply,
+  onSaveEdit,
+  onCancelEdit,
+  onDelete,
+  onSetEditContent,
+  onToggleMenu,
+  formatTime,
+}: MessageItemProps) {
+  const isMe = message.sender_id === userId;
+  const prevMessage = index > 0 ? messages[index - 1] : null;
+  const shouldShowProfile = !isMe && (
+    !prevMessage || 
+    prevMessage.sender_id !== message.sender_id ||
+    new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime() > CONSECUTIVE_MESSAGE_THRESHOLD
+  );
+  
+  const shouldShowMyProfile = isMe && messageLayout === "left" && (
+    !prevMessage || 
+    prevMessage.sender_id !== message.sender_id ||
+    new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime() > CONSECUTIVE_MESSAGE_THRESHOLD
+  );
+  
+  const shouldShowTime = !prevMessage || 
+    prevMessage.sender_id !== message.sender_id ||
+    new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime() > TIME_DISPLAY_THRESHOLD;
+  
+  const isDifferentSender = !prevMessage || prevMessage.sender_id !== message.sender_id;
+  const isSelected = selectedMessageId === message.id;
+  const isEditing = editingMessageId === message.id;
+  const isMenuOpen = showMessageMenu === message.id;
+
+  const longPress = useLongPress(
+    () => {
+      if (isMe) onSelectMessage(message.id, isMe);
+    },
+    (e) => {
+      if (!isMe) return;
+      e.preventDefault();
+    }
+  );
+
+  // Find the message being replied to
+  const repliedToMessage = message.reply_to ? messages.find(m => m.id === message.reply_to) : null;
+  const repliedToSender = repliedToMessage 
+    ? (repliedToMessage.sender_id === userId 
+        ? (myProfile?.display_name || "You") 
+        : (repliedToMessage.profiles?.display_name || repliedToMessage.profiles?.username || "Unknown"))
+    : null;
+
+  // Reply Preview Component - Discord style L-shape
+  const replyPreview = repliedToMessage && (
+    <div className="flex items-start gap-2 -mb-0.5">
+      <div className="w-4 h-4 mt-0.5 relative flex-shrink-0">
+        <div className="absolute left-0 top-0 w-4 h-3 border-l-2 border-t-2 border-accent/40 rounded-tl-sm" />
+      </div>
+      <div className="flex-1 min-w-0 -mt-1">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-accent">
+            {repliedToSender}
+          </span>
+          <span className="text-xs text-muted truncate">
+            {repliedToMessage.content.slice(0, 80)}{repliedToMessage.content.length > 80 ? "..." : ""}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Context Menu content - shown for ALL messages
+  const contextMenuContent = isMenuOpen && (
+    <div className="absolute right-0 top-0 -mt-8 flex items-center gap-1 bg-card border border-border rounded-lg shadow-lg p-1 z-20">
+      <button
+        onClick={(e) => { e.stopPropagation(); }}
+        className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+        title="Add reaction"
+      >
+        <Smile className="w-4 h-4 text-muted" />
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onStartReply(message); }}
+        className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+        title="Reply"
+      >
+        <Reply className="w-4 h-4 text-muted" />
+      </button>
+      {isMe && (
+        <>
+          <button
+            onClick={(e) => { e.stopPropagation(); onStartEdit(message); }}
+            className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+            title="Edit"
+          >
+            <Edit2 className="w-4 h-4 text-muted" />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(message.id); }}
+            className="p-1.5 hover:bg-red-500/10 rounded-md transition-colors"
+            title="Delete"
+          >
+            <Trash2 className="w-4 h-4 text-red-500" />
+          </button>
+        </>
+      )}
+    </div>
+  );
+
+  // Message Actions Bar content - always on right side, shown for ALL messages
+  const messageActionsContent = (
+    <div className={`absolute right-0 top-0 flex items-center gap-0.5 bg-card-hover border border-border rounded-md shadow-sm opacity-0 group-hover:opacity-100 transition-opacity z-10 mr-1`}>
+      <button
+        onClick={(e) => { e.stopPropagation(); }}
+        className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+        title="Add reaction"
+      >
+        <Smile className="w-4 h-4 text-muted" />
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleMenu(message.id, !isMenuOpen); }}
+        className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+        title="More"
+      >
+        <MoreVertical className="w-4 h-4 text-muted" />
+      </button>
+    </div>
+  );
+
+  if (isMe) {
+    const shouldAlignLeft = messageLayout === "left";
+    if (shouldAlignLeft) {
+      return (
+        <div
+          data-message-container
+          className={`flex justify-start px-4 rounded-lg transition-colors relative group ${
+            isSelected ? 'bg-accent/20' : 'hover:bg-accent/5'
+          } ${isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"}`}
+          onClick={() => onSelectMessage(message.id, isMe)}
+          {...longPress}
+        >
+          {contextMenuContent}
+          {messageActionsContent}
+          <div className="flex gap-3 max-w-[80%]">
+            {shouldShowMyProfile && (
+              <>
+                {myProfile?.avatar_url ? (
+                  <img src={myProfile.avatar_url} alt="Profile" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+                ) : (
+                  <div className="w-8 h-8 bg-accent rounded-full flex items-center justify-center flex-shrink-0">
+                    <span className="text-xs font-medium text-white">
+                      {(myProfile?.display_name || myProfile?.username || "You").charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+            {!shouldShowMyProfile && <div className="w-8 flex-shrink-0" />}
+            <div className="flex-1 min-w-0">
+              {shouldShowMyProfile && (
+                <div className="mb-1">
+                  <div className="flex items-center gap-3">
+                    <div className="text-sm font-medium text-foreground min-w-0 flex-shrink-0">
+                      {myProfile?.display_name || `@${myProfile?.username}` || "You"}
+                    </div>
+                    <div className="text-xs text-muted flex-shrink-0">
+                      {formatTime(message.created_at)}
+                      {message.edited_at && <span className="ml-1">(edited)</span>}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!shouldShowMyProfile && shouldShowTime && (
+                <div className="mb-1">
+                  <div className="flex items-center gap-3">
+                    <div className="text-sm font-medium text-foreground min-w-0 flex-shrink-0">
+                      {myProfile?.display_name || `@${myProfile?.username}` || "You"}
+                    </div>
+                    <div className="text-xs text-muted flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {formatTime(message.created_at)}
+                      {message.edited_at && <span className="ml-1">(edited)</span>}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {isEditing ? (
+                <div className="flex flex-col gap-2">
+                  <input
+                    type="text"
+                    value={editMessageContent}
+                    onChange={(e) => onSetEditContent(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') onSaveEdit();
+                      if (e.key === 'Escape') onCancelEdit();
+                    }}
+                    className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-accent"
+                    autoFocus
+                  />
+                  <div className="flex items-center gap-2 text-xs">
+                    <button onClick={onSaveEdit} className="px-3 py-1 bg-accent text-white rounded-md hover:bg-accent-hover transition-colors">Save</button>
+                    <button onClick={onCancelEdit} className="px-3 py-1 bg-background border border-border text-foreground rounded-md hover:bg-card-hover transition-colors">Cancel</button>
+                    <span className="text-muted">press enter to save</span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {replyPreview}
+                  <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">{message.content}</div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    } else {
+      return (
+        <div
+          data-message-container
+          className={`flex justify-end px-4 rounded-lg transition-colors relative group ${
+            isSelected ? 'bg-accent/20' : 'hover:bg-accent/5'
+          } ${isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"}`}
+          onClick={() => onSelectMessage(message.id, isMe)}
+          {...longPress}
+        >
+          {contextMenuContent}
+          {messageActionsContent}
+          <div className="max-w-[80%] text-right">
+            {shouldShowTime && (
+              <div className="flex items-center justify-end mb-1">
+                <div className="text-xs text-muted mr-2">
+                  {formatTime(message.created_at)}
+                  {message.edited_at && <span className="ml-1">(edited)</span>}
+                </div>
+                <div className="text-sm font-medium text-foreground">
+                  {myProfile?.display_name || `@${myProfile?.username}` || "You"}
+                </div>
+              </div>
+            )}
+            {isEditing ? (
+              <div className="flex flex-col gap-2 text-left">
+                <input
+                  type="text"
+                  value={editMessageContent}
+                  onChange={(e) => onSetEditContent(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') onSaveEdit();
+                    if (e.key === 'Escape') onCancelEdit();
+                  }}
+                  className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-accent"
+                  autoFocus
+                />
+                <div className="flex items-center gap-2 text-xs">
+                  <button onClick={onSaveEdit} className="px-3 py-1 bg-accent text-white rounded-md hover:bg-accent-hover transition-colors">Save</button>
+                  <button onClick={onCancelEdit} className="px-3 py-1 bg-background border border-border text-foreground rounded-md hover:bg-card-hover transition-colors">Cancel</button>
+                  <span className="text-muted">press enter to save</span>
+                </div>
+              </div>
+            ) : (
+              <>
+                {replyPreview}
+                <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere max-w-full">{message.content}</div>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+  }
+
+  return (
+    <div
+      data-message-container
+      className={`flex justify-start px-4 rounded-lg transition-colors relative group ${
+        isSelected ? 'bg-accent/20' : 'hover:bg-accent/5'
+      } ${isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"}`}
+      onClick={() => onSelectMessage(message.id, isMe)}
+    >
+      {contextMenuContent}
+      {messageActionsContent}
+      <div className="flex gap-3 max-w-[80%]">
+        {shouldShowProfile && (
+          <>
+            {message.profiles.avatar_url ? (
+              <img src={message.profiles.avatar_url} alt="Profile" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+            ) : (
+              <div className="w-8 h-8 bg-border rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-xs font-medium text-foreground">
+                  {(message.profiles.display_name || message.profiles.username).charAt(0).toUpperCase()}
+                </span>
+              </div>
+            )}
+          </>
+        )}
+        {!shouldShowProfile && <div className="w-8 flex-shrink-0" />}
+        <div className="flex-1 min-w-0">
+          {shouldShowProfile && (
+            <div className="mb-1">
+              <div className="flex items-center gap-3">
+                <div className="text-sm font-medium text-foreground min-w-0 flex-shrink-0">
+                  {message.profiles.display_name || `@${message.profiles.username}`}
+                </div>
+                <div className="text-xs text-muted flex-shrink-0">
+                  {formatTime(message.created_at)}
+                  {message.edited_at && <span className="ml-1">(edited)</span>}
+                </div>
+              </div>
+            </div>
+          )}
+          {!shouldShowProfile && shouldShowTime && (
+            <div className="mb-1">
+              <div className="flex items-center gap-3">
+                <div className="text-sm font-medium text-foreground min-w-0 flex-shrink-0">
+                  {message.profiles.display_name || `@${message.profiles.username}`}
+                </div>
+                <div className="text-xs text-muted flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {formatTime(message.created_at)}
+                  {message.edited_at && <span className="ml-1">(edited)</span>}
+                </div>
+              </div>
+            </div>
+          )}
+          {replyPreview}
+          <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">{message.content}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: chatId } = use(params);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -95,6 +494,11 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     hasMoreNewer: false,
   });
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editMessageContent, setEditMessageContent] = useState("");
+  const [showMessageMenu, setShowMessageMenu] = useState<string | null>(null);
+  const [replyingToMessage, setReplyingToMessage] = useState<Message | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const scrollPositionRef = useRef<number>(0);
   const isNearBottomRef = useRef(true);
@@ -436,7 +840,9 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     if (!newMessage.trim() || !userId) return;
 
     const content = newMessage.trim();
+    const replyToId = replyingToMessage?.id;
     setNewMessage("");
+    setReplyingToMessage(null);
 
     // Optimistically add message to UI
     const clientKey = `ck-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -457,6 +863,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       sender_id: userId,
       content,
       client_key: clientKey,
+      reply_to: replyToId || null,
     });
 
     if (error) {
@@ -472,6 +879,98 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       minute: "2-digit",
     });
   };
+
+  // Handle message click for selection
+  const handleMessageClick = (messageId: string, isMe: boolean) => {
+    if (!isMe) return;
+    setSelectedMessageId(prev => prev === messageId ? null : messageId);
+    setShowMessageMenu(prev => prev === messageId ? null : messageId);
+  };
+
+  // Start editing a message
+  const startEditMessage = (message: Message) => {
+    setEditingMessageId(message.id);
+    setEditMessageContent(message.content);
+    setShowMessageMenu(null);
+    setSelectedMessageId(null);
+    setReplyingToMessage(null);
+  };
+
+  // Start replying to a message
+  const startReplyMessage = (message: Message) => {
+    setReplyingToMessage(message);
+    setShowMessageMenu(null);
+    setSelectedMessageId(null);
+  };
+
+  // Cancel reply
+  const cancelReplyMessage = () => {
+    setReplyingToMessage(null);
+  };
+
+  // Cancel editing
+  const cancelEditMessage = () => {
+    setEditingMessageId(null);
+    setEditMessageContent("");
+  };
+
+  // Save edited message
+  const saveEditMessage = async () => {
+    if (!editingMessageId || !editMessageContent.trim()) return;
+
+    const { error } = await supabase
+      .from("messages")
+      .update({
+        content: editMessageContent.trim(),
+        edited_at: new Date().toISOString(),
+      })
+      .eq("id", editingMessageId);
+
+    if (error) {
+      console.error("Error updating message:", error);
+      return;
+    }
+
+    setMessages(prev => prev.map(m => 
+      m.id === editingMessageId 
+        ? { ...m, content: editMessageContent.trim(), edited_at: new Date().toISOString() }
+        : m
+    ));
+
+    setEditingMessageId(null);
+    setEditMessageContent("");
+  };
+
+  // Delete message
+  const deleteMessage = async (messageId: string) => {
+    const { error } = await supabase
+      .from("messages")
+      .delete()
+      .eq("id", messageId);
+
+    if (error) {
+      console.error("Error deleting message:", error);
+      return;
+    }
+
+    setMessages(prev => prev.filter(m => m.id !== messageId));
+    setShowMessageMenu(null);
+    setSelectedMessageId(null);
+  };
+
+  // Clear selection when clicking elsewhere
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-message-container]')) {
+        setSelectedMessageId(null);
+        setShowMessageMenu(null);
+      }
+    };
+
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
 
   const handleEditGroup = () => {
     setEditGroupName(chat?.name || "");
@@ -641,190 +1140,60 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
                 <p>No messages yet. Say hello!</p>
               </div>
             ) : (
-              messages.map((message, index) => {
-                const isMe = message.sender_id === userId;
-                const prevMessage = index > 0 ? messages[index - 1] : null;
-                const shouldShowProfile = !isMe && (
-                  !prevMessage || 
-                  prevMessage.sender_id !== message.sender_id ||
-                  new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime() > CONSECUTIVE_MESSAGE_THRESHOLD
-                );
-                
-                const shouldShowMyProfile = isMe && messageLayout === "left" && (
-                  !prevMessage || 
-                  prevMessage.sender_id !== message.sender_id ||
-                  new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime() > CONSECUTIVE_MESSAGE_THRESHOLD
-                );
-                
-                const shouldShowTime = !prevMessage || 
-                  prevMessage.sender_id !== message.sender_id ||
-                  new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime() > TIME_DISPLAY_THRESHOLD;
-                
-                const isDifferentSender = !prevMessage || prevMessage.sender_id !== message.sender_id;
-                
-                if (isMe) {
-                  const shouldAlignLeft = messageLayout === "left";
-                  if (shouldAlignLeft) {
-                    // Left-aligned layout with profile picture
-                    return (
-                      <div
-                        key={message.id}
-                        className={`flex justify-start px-4 rounded-lg hover:bg-accent/5 transition-colors group ${
-                          isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"
-                        }`}
-                      >
-                        <div className="flex gap-3 max-w-[80%]">
-                          {shouldShowMyProfile && (
-                            <>
-                              {myProfile?.avatar_url ? (
-                                <img 
-                                  src={myProfile.avatar_url} 
-                                  alt="Profile" 
-                                  className="w-8 h-8 rounded-full object-cover flex-shrink-0"
-                                />
-                              ) : (
-                                <div className="w-8 h-8 bg-accent rounded-full flex items-center justify-center flex-shrink-0">
-                                  <span className="text-xs font-medium text-white">
-                                    {(myProfile?.display_name || myProfile?.username || "You").charAt(0).toUpperCase()}
-                                  </span>
-                                </div>
-                              )}
-                            </>
-                          )}
-                          {!shouldShowMyProfile && <div className="w-8 flex-shrink-0" />}
-                          
-                          <div className="flex-1 min-w-0">
-                            {shouldShowMyProfile && (
-                            <div className="mb-1">
-                              <div className="flex items-center gap-3">
-                                <div className="text-sm font-medium text-foreground min-w-0 flex-shrink-0">
-                                  {myProfile?.display_name || `@${myProfile?.username}` || "You"}
-                                </div>
-                                <div className="text-xs text-muted flex-shrink-0">
-                                  {formatTime(message.created_at)}
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                          {!shouldShowMyProfile && shouldShowTime && (
-                            <div className="mb-1">
-                              <div className="flex items-center gap-3">
-                                <div className="text-sm font-medium text-foreground min-w-0 flex-shrink-0">
-                                  {myProfile?.display_name || `@${myProfile?.username}` || "You"}
-                                </div>
-                                <div className="text-xs text-muted flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  {formatTime(message.created_at)}
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                            <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">
-                              {message.content}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  } else {
-                    // Default right-aligned layout
-                    return (
-                      <div
-                        key={message.id}
-                        className={`flex justify-end px-4 rounded-lg hover:bg-accent/5 transition-colors group ${
-                          isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"
-                        }`}
-                      >
-                        <div className="max-w-[80%] text-right">
-                          {shouldShowTime && (
-                            <div className="flex items-center justify-end mb-1">
-                              <div className="text-xs text-muted mr-2">
-                                {formatTime(message.created_at)}
-                              </div>
-                              <div className="text-sm font-medium text-foreground">
-                                {myProfile?.display_name || `@${myProfile?.username}` || "You"}
-                              </div>
-                            </div>
-                          )}
-                          <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere max-w-full">{message.content}</div>
-                        </div>
-                      </div>
-                    );
-                  }
-                }
-                
-                return (
-                  <div
-                    key={message.id}
-                    className={`flex justify-start px-4 rounded-lg hover:bg-accent/5 transition-colors group ${
-                      isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"
-                    }`}
-                  >
-                    <div className="flex gap-3 max-w-[80%]">
-                      {shouldShowProfile && (
-                            <>
-                              {message.profiles.avatar_url ? (
-                                <img 
-                                  src={message.profiles.avatar_url} 
-                                  alt="Profile" 
-                                  className="w-8 h-8 rounded-full object-cover flex-shrink-0"
-                                />
-                              ) : (
-                                <div className="w-8 h-8 bg-border rounded-full flex items-center justify-center flex-shrink-0">
-                                  <span className="text-xs font-medium text-foreground">
-                                    {(message.profiles.display_name || message.profiles.username).charAt(0).toUpperCase()}
-                                  </span>
-                                </div>
-                              )}
-                            </>
-                          )}
-                          {!shouldShowProfile && <div className="w-8 flex-shrink-0" />}
-                      
-                      <div className="flex-1 min-w-0">
-                        {shouldShowProfile && (
-                            <div className="mb-1">
-                              <div className="flex items-center gap-3">
-                                <div className="text-sm font-medium text-foreground min-w-0 flex-shrink-0">
-                                  {message.profiles.display_name || `@${message.profiles.username}`}
-                                </div>
-                                <div className="text-xs text-muted flex-shrink-0">
-                                  {formatTime(message.created_at)}
-                                </div>
-                              </div>
-                            </div>
-                        )}
-                        {!shouldShowProfile && shouldShowTime && (
-                          <div className="mb-1">
-                            <div className="flex items-center gap-3">
-                              <div className="text-sm font-medium text-foreground min-w-0 flex-shrink-0">
-                                {message.profiles.display_name || `@${message.profiles.username}`}
-                              </div>
-                              <div className="text-xs text-muted flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {formatTime(message.created_at)}
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                        <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">
-                          {message.content}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
+              messages.map((message, index) => (
+                <MessageItem
+                  key={message.id}
+                  message={message}
+                  index={index}
+                  messages={messages}
+                  userId={userId}
+                  myProfile={myProfile}
+                  messageLayout={messageLayout}
+                  selectedMessageId={selectedMessageId}
+                  editingMessageId={editingMessageId}
+                  editMessageContent={editMessageContent}
+                  showMessageMenu={showMessageMenu}
+                  onSelectMessage={handleMessageClick}
+                  onStartEdit={startEditMessage}
+                  onStartReply={startReplyMessage}
+                  onSaveEdit={saveEditMessage}
+                  onCancelEdit={cancelEditMessage}
+                  onDelete={deleteMessage}
+                  onSetEditContent={setEditMessageContent}
+                  onToggleMenu={(id, isOpen) => setShowMessageMenu(isOpen ? id : null)}
+                  formatTime={formatTime}
+                />
+              ))
             )}
             <div />
           </div>
         </div>
 
         <div className="sticky bottom-0 bg-card/95 backdrop-blur-sm border-b border-border z-50">
+          {replyingToMessage && (
+            <div className="px-4 pt-3 pb-2 flex items-center gap-3">
+              <div className="flex-1 flex items-center gap-2 text-sm text-muted bg-accent/10 rounded-lg px-3 py-2">
+                <Reply className="w-4 h-4 text-accent" />
+                <span className="truncate">
+                  Replying to <span className="font-medium text-foreground">{replyingToMessage.profiles.display_name || `@${replyingToMessage.profiles.username}`}</span>: {replyingToMessage.content.slice(0, 50)}{replyingToMessage.content.length > 50 ? "..." : ""}
+                </span>
+              </div>
+              <button
+                onClick={cancelReplyMessage}
+                className="p-1.5 text-muted hover:text-foreground hover:bg-card-hover rounded-md transition-colors"
+              >
+                <XIcon className="w-4 h-4" />
+              </button>
+            </div>
+          )}
           <form onSubmit={sendMessage} className="flex gap-3 p-4">
             <input
               type="text"
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
-              placeholder="Type a message..."
+              placeholder={replyingToMessage ? "Type your reply..." : "Type a message..."}
               className="flex-1 px-4 py-3 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-accent text-foreground placeholder:text-muted transition-all"
+              autoFocus={!!replyingToMessage}
             />
             <button
               type="submit"
