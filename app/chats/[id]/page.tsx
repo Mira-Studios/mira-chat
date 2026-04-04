@@ -624,7 +624,12 @@ function MessageItem({
             </div>
           )}
           {replyPreview}
-          <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">{message.content}</div>
+          {renderFileAttachments(message.content)}
+          {extractTextContent(message.content) && (
+            <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">
+              {extractTextContent(message.content)}
+            </div>
+          )}
           {reactionsDisplay}
         </div>
       </div>
