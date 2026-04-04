@@ -727,7 +727,24 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
         .order("created_at", { ascending: false })
         .limit(MESSAGES_PER_PAGE);
 
-      const orderedMessages = messagesData?.reverse() || [];
+      // Fetch reactions for these messages
+      const messageIds = messagesData?.map(m => m.id) || [];
+      let reactionsData: Reaction[] = [];
+      if (messageIds.length > 0) {
+        const { data: reactions } = await supabase
+          .from("reactions")
+          .select("*")
+          .in("message_id", messageIds);
+        reactionsData = reactions || [];
+      }
+
+      // Merge reactions into messages
+      const messagesWithReactions = messagesData?.map(msg => ({
+        ...msg,
+        reactions: reactionsData.filter(r => r.message_id === msg.id),
+      })) || [];
+
+      const orderedMessages = messagesWithReactions.reverse();
       setMessages(orderedMessages);
       setPagination({
         hasMoreOlder: (messagesData?.length || 0) >= MESSAGES_PER_PAGE,
@@ -752,11 +769,27 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
         .order("created_at", { ascending: true });
 
       if (messagesData && messagesData.length > 0) {
+        // Fetch reactions for new messages
+        const newMessageIds = messagesData.map(m => m.id);
+        let newReactionsData: Reaction[] = [];
+        if (newMessageIds.length > 0) {
+          const { data: reactions } = await supabase
+            .from("reactions")
+            .select("*")
+            .in("message_id", newMessageIds);
+          newReactionsData = reactions || [];
+        }
+
+        const messagesWithReactions = messagesData.map(msg => ({
+          ...msg,
+          reactions: newReactionsData.filter(r => r.message_id === msg.id),
+        }));
+
         setMessages((prev) => {
           const currentIds = new Set(prev.map((m) => m.id));
           const currentKeys = new Set(prev.map((m) => m.client_key).filter(Boolean));
           
-          const newMessages = (messagesData as Message[]).filter((m) => {
+          const newMessages = (messagesWithReactions as Message[]).filter((m) => {
             if (currentIds.has(m.id)) return false;
             if (m.client_key && currentKeys.has(m.client_key)) return false;
             return true;
@@ -870,7 +903,24 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       .limit(MESSAGES_PER_PAGE);
 
     if (olderMessages && olderMessages.length > 0) {
-      const ordered = olderMessages.reverse();
+      // Fetch reactions for older messages
+      const olderMessageIds = olderMessages.map(m => m.id);
+      let olderReactionsData: Reaction[] = [];
+      if (olderMessageIds.length > 0) {
+        const { data: reactions } = await supabase
+          .from("reactions")
+          .select("*")
+          .in("message_id", olderMessageIds);
+        olderReactionsData = reactions || [];
+      }
+
+      // Merge reactions into older messages
+      const olderMessagesWithReactions = olderMessages.map(msg => ({
+        ...msg,
+        reactions: olderReactionsData.filter(r => r.message_id === msg.id),
+      }));
+
+      const ordered = olderMessagesWithReactions.reverse();
       setMessages((prev) => {
         const combined = [...ordered, ...prev];
         // Trim from bottom if we exceed buffer and were near bottom
