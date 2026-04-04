@@ -70,6 +70,14 @@ type SupabaseMessage = {
   client_key?: string;
 };
 
+type Reaction = {
+  id: string;
+  message_id: string;
+  user_id: string;
+  reaction: string;
+  created_at: string;
+};
+
 type Message = {
   id: string;
   chat_id?: string;
@@ -84,6 +92,7 @@ type Message = {
     display_name?: string;
     avatar_url?: string;
   };
+  reactions?: Reaction[];
 };
 
 type Chat = {
@@ -118,14 +127,19 @@ interface MessageItemProps {
   editingMessageId: string | null;
   editMessageContent: string;
   showMessageMenu: string | null;
+  showReactionPicker: string | null;
   onSelectMessage: (id: string, isMe: boolean) => void;
   onStartEdit: (message: Message) => void;
   onStartReply: (message: Message) => void;
+  onReplyClick: (messageId: string) => void;
+  onAddReaction: (messageId: string, reaction: string) => void;
+  onRemoveReaction: (messageId: string, reactionId: string) => void;
   onSaveEdit: () => void;
   onCancelEdit: () => void;
   onDelete: (id: string) => void;
   onSetEditContent: (content: string) => void;
   onToggleMenu: (id: string, isOpen: boolean) => void;
+  onToggleReactionPicker: (id: string, isOpen: boolean) => void;
   formatTime: (date: string) => string;
 }
 
@@ -140,14 +154,19 @@ function MessageItem({
   editingMessageId,
   editMessageContent,
   showMessageMenu,
+  showReactionPicker,
   onSelectMessage,
   onStartEdit,
   onStartReply,
+  onReplyClick,
+  onAddReaction,
+  onRemoveReaction,
   onSaveEdit,
   onCancelEdit,
   onDelete,
   onSetEditContent,
   onToggleMenu,
+  onToggleReactionPicker,
   formatTime,
 }: MessageItemProps) {
   const isMe = message.sender_id === userId;
@@ -172,6 +191,7 @@ function MessageItem({
   const isSelected = selectedMessageId === message.id;
   const isEditing = editingMessageId === message.id;
   const isMenuOpen = showMessageMenu === message.id;
+  const isReactionPickerOpen = showReactionPicker === message.id;
 
   const longPress = useLongPress(
     () => {
@@ -183,7 +203,83 @@ function MessageItem({
     }
   );
 
-  // Find the message being replied to
+  // Available reactions
+  const availableReactions = [
+    { emoji: '👍', name: 'thumbs_up' },
+    { emoji: '😭', name: 'crying' },
+  ];
+
+  // Get reaction counts for this message
+  const reactionCounts = message.reactions?.reduce((acc, reaction) => {
+    acc[reaction.reaction] = (acc[reaction.reaction] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>) || {};
+
+  // Check if user has reacted with a specific reaction
+  const hasUserReacted = (reactionName: string) => {
+    return message.reactions?.some(r => r.user_id === userId && r.reaction === reactionName) || false;
+  };
+
+  // Reaction Picker Component
+  const reactionPicker = isReactionPickerOpen && (
+    <div className="absolute right-0 top-0 -mt-10 flex items-center gap-1 bg-card border border-border rounded-lg shadow-lg p-1.5 z-30">
+      {availableReactions.map(({ emoji, name }) => (
+        <button
+          key={name}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (hasUserReacted(name)) {
+              const existingReaction = message.reactions?.find(r => r.user_id === userId && r.reaction === name);
+              if (existingReaction) {
+                onRemoveReaction(message.id, existingReaction.id);
+              }
+            } else {
+              onAddReaction(message.id, name);
+            }
+            onToggleReactionPicker(message.id, false);
+          }}
+          className={`p-1.5 hover:bg-accent/10 rounded-md transition-colors text-lg ${hasUserReacted(name) ? 'bg-accent/20' : ''}`}
+          title={name.replace('_', ' ')}
+        >
+          {emoji}
+        </button>
+      ))}
+    </div>
+  );
+
+  // Reactions Display Component
+  const reactionsDisplay = Object.keys(reactionCounts).length > 0 && (
+    <div className={`flex flex-wrap gap-0.5 mt-0.5 ${isMe && messageLayout !== "left" ? "justify-end" : "justify-start"}`}>
+      {Object.entries(reactionCounts).map(([reactionName, count]) => {
+        const emoji = availableReactions.find(r => r.name === reactionName)?.emoji || reactionName;
+        const userHasReacted = hasUserReacted(reactionName);
+        return (
+          <button
+            key={reactionName}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (userHasReacted) {
+                const existingReaction = message.reactions?.find(r => r.user_id === userId && r.reaction === reactionName);
+                if (existingReaction) {
+                  onRemoveReaction(message.id, existingReaction.id);
+                }
+              } else {
+                onAddReaction(message.id, reactionName);
+              }
+            }}
+            className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs border transition-colors ${
+              userHasReacted 
+                ? 'bg-accent/20 border-accent/50 text-accent' 
+                : 'bg-card-hover border-border hover:bg-accent/10'
+            }`}
+          >
+            <span className="text-sm">{emoji}</span>
+            <span className="text-xs font-medium leading-none">{count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
   const repliedToMessage = message.reply_to ? messages.find(m => m.id === message.reply_to) : null;
   const repliedToSender = repliedToMessage 
     ? (repliedToMessage.sender_id === userId 
@@ -193,12 +289,18 @@ function MessageItem({
 
   // Reply Preview Component - Discord style L-shape
   const replyPreview = repliedToMessage && (
-    <div className="flex items-start gap-2 -mb-0.5">
-      <div className="w-4 h-4 mt-0.5 relative flex-shrink-0">
-        <div className="absolute left-0 top-0 w-4 h-3 border-l-2 border-t-2 border-accent/40 rounded-tl-sm" />
+    <div 
+      className={`flex items-start gap-2 -mb-0.5 cursor-pointer hover:opacity-80 transition-opacity ${isMe && messageLayout !== "left" ? "flex-row-reverse" : ""}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onReplyClick(repliedToMessage.id);
+      }}
+    >
+      <div className={`w-4 h-4 mt-0.5 relative flex-shrink-0 ${isMe && messageLayout !== "left" ? "ml-1" : "mr-0.5"}`}>
+        <div className={`absolute top-0 w-4 h-3 border-t-2 border-accent/40 rounded-tl-sm ${isMe && messageLayout !== "left" ? "right-0 border-r-2 rounded-tr-sm" : "left-0 border-l-2"}`} />
       </div>
       <div className="flex-1 min-w-0 -mt-1">
-        <div className="flex items-center gap-2">
+        <div className={`flex items-center gap-2 ${isMe && messageLayout !== "left" ? "flex-row-reverse" : ""}`}>
           <span className="text-xs font-medium text-accent">
             {repliedToSender}
           </span>
@@ -214,7 +316,7 @@ function MessageItem({
   const contextMenuContent = isMenuOpen && (
     <div className="absolute right-0 top-0 -mt-8 flex items-center gap-1 bg-card border border-border rounded-lg shadow-lg p-1 z-20">
       <button
-        onClick={(e) => { e.stopPropagation(); }}
+        onClick={(e) => { e.stopPropagation(); onToggleReactionPicker(message.id, !isReactionPickerOpen); }}
         className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
         title="Add reaction"
       >
@@ -252,7 +354,7 @@ function MessageItem({
   const messageActionsContent = (
     <div className={`absolute right-0 top-0 flex items-center gap-0.5 bg-card-hover border border-border rounded-md shadow-sm opacity-0 group-hover:opacity-100 transition-opacity z-10 mr-1`}>
       <button
-        onClick={(e) => { e.stopPropagation(); }}
+        onClick={(e) => { e.stopPropagation(); onToggleReactionPicker(message.id, !isReactionPickerOpen); }}
         className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
         title="Add reaction"
       >
@@ -274,6 +376,7 @@ function MessageItem({
       return (
         <div
           data-message-container
+          data-message-id={message.id}
           className={`flex justify-start px-4 rounded-lg transition-colors relative group ${
             isSelected ? 'bg-accent/20' : 'hover:bg-accent/5'
           } ${isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"}`}
@@ -345,8 +448,10 @@ function MessageItem({
                 </div>
               ) : (
                 <>
+                  {reactionPicker}
                   {replyPreview}
                   <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">{message.content}</div>
+                  {reactionsDisplay}
                 </>
               )}
             </div>
@@ -357,6 +462,7 @@ function MessageItem({
       return (
         <div
           data-message-container
+          data-message-id={message.id}
           className={`flex justify-end px-4 rounded-lg transition-colors relative group ${
             isSelected ? 'bg-accent/20' : 'hover:bg-accent/5'
           } ${isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"}`}
@@ -398,8 +504,10 @@ function MessageItem({
               </div>
             ) : (
               <>
+                {reactionPicker}
                 {replyPreview}
                 <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere max-w-full">{message.content}</div>
+                {reactionsDisplay}
               </>
             )}
           </div>
@@ -411,6 +519,7 @@ function MessageItem({
   return (
     <div
       data-message-container
+      data-message-id={message.id}
       className={`flex justify-start px-4 rounded-lg transition-colors relative group ${
         isSelected ? 'bg-accent/20' : 'hover:bg-accent/5'
       } ${isDifferentSender ? "pt-2 pb-0.5" : "py-0.5"}`}
@@ -462,6 +571,7 @@ function MessageItem({
           )}
           {replyPreview}
           <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">{message.content}</div>
+          {reactionsDisplay}
         </div>
       </div>
     </div>
@@ -498,6 +608,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editMessageContent, setEditMessageContent] = useState("");
   const [showMessageMenu, setShowMessageMenu] = useState<string | null>(null);
+  const [showReactionPicker, setShowReactionPicker] = useState<string | null>(null);
   const [replyingToMessage, setReplyingToMessage] = useState<Message | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const scrollPositionRef = useRef<number>(0);
@@ -854,6 +965,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       sender_id: userId,
       created_at: new Date().toISOString(),
       client_key: clientKey,
+      reply_to: replyToId,
       profiles: { username: "You" },
     };
     setMessages((prev) => [...prev, optimisticMsg]);
@@ -901,6 +1013,19 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     setReplyingToMessage(message);
     setShowMessageMenu(null);
     setSelectedMessageId(null);
+  };
+
+  // Scroll to a specific message when clicking a reply
+  const scrollToMessage = (messageId: string) => {
+    const element = document.querySelector(`[data-message-id="${messageId}"]`);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Highlight the message briefly
+      element.classList.add('bg-accent/20');
+      setTimeout(() => {
+        element.classList.remove('bg-accent/20');
+      }, 1500);
+    }
   };
 
   // Cancel reply
@@ -958,6 +1083,70 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     setSelectedMessageId(null);
   };
 
+  // Add reaction to message
+  const addReaction = async (messageId: string, reaction: string) => {
+    if (!userId) return;
+
+    const { data, error } = await supabase
+      .from("reactions")
+      .insert({
+        message_id: messageId,
+        user_id: userId,
+        reaction: reaction,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Error adding reaction:", error);
+      return;
+    }
+
+    // Optimistically update UI
+    setMessages(prev => prev.map(m => {
+      if (m.id === messageId) {
+        const newReaction: Reaction = {
+          id: data.id,
+          message_id: messageId,
+          user_id: userId,
+          reaction: reaction,
+          created_at: new Date().toISOString(),
+        };
+        return {
+          ...m,
+          reactions: [...(m.reactions || []), newReaction],
+        };
+      }
+      return m;
+    }));
+  };
+
+  // Remove reaction from message
+  const removeReaction = async (messageId: string, reactionId: string) => {
+    if (!userId) return;
+
+    const { error } = await supabase
+      .from("reactions")
+      .delete()
+      .eq("id", reactionId);
+
+    if (error) {
+      console.error("Error removing reaction:", error);
+      return;
+    }
+
+    // Optimistically update UI
+    setMessages(prev => prev.map(m => {
+      if (m.id === messageId) {
+        return {
+          ...m,
+          reactions: m.reactions?.filter(r => r.id !== reactionId) || [],
+        };
+      }
+      return m;
+    }));
+  };
+
   // Clear selection when clicking elsewhere
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -965,6 +1154,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       if (!target.closest('[data-message-container]')) {
         setSelectedMessageId(null);
         setShowMessageMenu(null);
+        setShowReactionPicker(null);
       }
     };
 
@@ -1153,14 +1343,19 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
                   editingMessageId={editingMessageId}
                   editMessageContent={editMessageContent}
                   showMessageMenu={showMessageMenu}
+                  showReactionPicker={showReactionPicker}
                   onSelectMessage={handleMessageClick}
                   onStartEdit={startEditMessage}
                   onStartReply={startReplyMessage}
+                  onReplyClick={scrollToMessage}
+                  onAddReaction={addReaction}
+                  onRemoveReaction={removeReaction}
                   onSaveEdit={saveEditMessage}
                   onCancelEdit={cancelEditMessage}
                   onDelete={deleteMessage}
                   onSetEditContent={setEditMessageContent}
                   onToggleMenu={(id, isOpen) => setShowMessageMenu(isOpen ? id : null)}
+                  onToggleReactionPicker={(id, isOpen) => setShowReactionPicker(isOpen ? id : null)}
                   formatTime={formatTime}
                 />
               ))
