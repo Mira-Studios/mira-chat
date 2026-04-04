@@ -643,6 +643,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
   const [isUploading, setIsUploading] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [mediaModal, setMediaModal] = useState<{ url: string; type: string; name: string } | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
   const [loading, setLoading] = useState(true);
   const [messageLayout, setMessageLayout] = useState<"default" | "left">(() => {
     const savedLayout = typeof window !== 'undefined' ? localStorage.getItem("messageLayout") as "default" | "left" : "default";
@@ -910,6 +911,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       }
     }, 2000);
 
+    console.log("Setting up realtime subscription for chat:", chatId);
     const subscription = supabase
       .channel(`chat:${chatId}`)
       .on(
@@ -922,7 +924,55 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
         async (payload) => {
           console.log("Realtime message received:", payload);
           const msg = payload.new as SupabaseMessage;
-          if (msg.chat_id !== chatId) return;
+          console.log("Message details:", { chatId: msg.chat_id, currentChatId: chatId, senderId: msg.sender_id });
+          
+          // Always process notifications for any message in any chat when page is inactive
+          if (!isPageActive() && msg.sender_id !== userId) {
+            console.log("Page inactive and message from other user, checking notification conditions");
+            
+            // Fetch sender profile
+            const { data: senderProfile } = await supabase
+              .from('profiles')
+              .select('username, display_name')
+              .eq('id', msg.sender_id)
+              .single();
+            
+            const senderName = senderProfile?.display_name || senderProfile?.username || 'Unknown';
+            
+            // Get chat name for this message
+            const { data: chatData } = await supabase
+              .from('chats')
+              .select('name')
+              .eq('id', msg.chat_id)
+              .single();
+            
+            const chatName = chatData?.name || 'New Message';
+            
+            const messageContent = extractTextContent(msg.content);
+            const displayContent = messageContent || (msg.content.includes('files') ? 'Sent a file' : 'Sent a message');
+            
+            console.log('Showing notification:', {
+              chatName,
+              displayContent,
+              senderName,
+              messageChatId: msg.chat_id,
+              currentChatId: chatId
+            });
+            
+            showNotification(
+              chatName,
+              displayContent,
+              senderName
+            );
+          }
+          
+          // Only process message for UI if it's for the current chat
+          if (msg.chat_id !== chatId) {
+            console.log("Message not for this chat, ignoring for UI");
+            return;
+          }
+          
+          console.log("Processing message for this chat UI");
           
           const { data: profileData } = await supabase
             .from("profiles")
@@ -1221,7 +1271,68 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     }
   };
 
-  // Render file attachments in messages
+  // Notification functions
+  const requestNotificationPermission = async () => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      return permission;
+    }
+    return Notification.permission;
+  };
+
+  const showNotification = (title: string, body: string, sender?: string) => {
+    console.log('Attempting to show notification:', { title, body, sender, permission: Notification.permission });
+    
+    if ('Notification' in window) {
+      if (Notification.permission === 'granted') {
+        console.log('Permission granted, creating notification');
+        const notification = new Notification(title, {
+          body: sender ? `${sender}: ${body}` : body,
+          icon: '/favicon.ico',
+          badge: '/favicon.ico',
+          tag: chatId, // Prevent duplicate notifications for same chat
+          requireInteraction: false,
+        });
+
+        // Click notification to focus the window
+        notification.onclick = () => {
+          window.focus();
+          notification.close();
+        };
+
+        // Auto-close after 5 seconds
+        setTimeout(() => {
+          notification.close();
+        }, 5000);
+      } else if (Notification.permission === 'denied') {
+        console.log('Notification permission denied');
+      } else {
+        console.log('Notification permission not granted, requesting...');
+        requestNotificationPermission();
+      }
+    } else {
+      console.log('Notifications not supported in this browser');
+    }
+  };
+
+  const isPageActive = () => {
+    return !document.hidden && document.hasFocus();
+  };
+
+  const extractTextContent = (content: string) => {
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed.files && Array.isArray(parsed.files)) {
+        // Return empty string if message only contains files
+        return '';
+      }
+    } catch (e) {
+      // Not JSON, return original content
+    }
+    return content;
+  };
+
   const renderFileAttachments = (content: string) => {
     try {
       const parsed = JSON.parse(content);
@@ -1314,20 +1425,6 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       // Not JSON, return null to render as regular text
     }
     return null;
-  };
-
-  // Extract text content from message (remove file JSON)
-  const extractTextContent = (content: string) => {
-    try {
-      const parsed = JSON.parse(content);
-      if (parsed.files && Array.isArray(parsed.files)) {
-        // Return empty string if message only contains files
-        return '';
-      }
-    } catch (e) {
-      // Not JSON, return original content
-    }
-    return content;
   };
 
   const formatTime = (date: string) => {
@@ -1491,6 +1588,14 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       return m;
     }));
   };
+
+  // Request notification permission on mount
+  useEffect(() => {
+    const checkNotificationPermission = async () => {
+      await requestNotificationPermission();
+    };
+    checkNotificationPermission();
+  }, []);
 
   // Clear selection when clicking elsewhere
   useEffect(() => {
