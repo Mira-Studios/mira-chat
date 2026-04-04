@@ -31,3 +31,35 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
+
+/* Custom scrollbar styles */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.5);
+  border-radius: 3px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.7);
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:active {
+  background: rgba(59, 130, 246, 0.9);
+}
+
+/* Firefox scrollbar styles */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(59, 130, 246, 0.5) transparent;
+}
+
+.scrollbar-thin:hover {
+  scrollbar-color: rgba(59, 130, 246, 0.7) transparent;
+}

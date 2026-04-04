@@ -1,10 +1,13 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter, useParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { MessageSquare, Plus, ChevronRight, LogOut, X, Settings, ArrowLeft } from "lucide-react";
+import { cache, CACHE_KEYS, CACHE_TTL } from "@/lib/cache";
+import { ChatListSkeleton, ProfileSkeleton, SearchSkeleton } from "@/components/skeletons";
+import { UnreadDot } from "@/components/unread-indicator";
 
 // Hook to detect mobile viewport
 function useIsMobile() {
@@ -33,6 +36,8 @@ type Chat = {
   id: string;
   name: string | null;
   participants: Profile[];
+  last_message_at?: string;
+  updated_at?: string;
 };
 
 export default function ChatsLayout({
@@ -43,6 +48,8 @@ export default function ChatsLayout({
   const [chats, setChats] = useState<Chat[]>([]);
   const [user, setUser] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [initialLoad, setInitialLoad] = useState(true);
+  const [unreadChats, setUnreadChats] = useState<Set<string>>(new Set());
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [messageLayout, setMessageLayout] = useState<"default" | "left">(() => {
@@ -76,35 +83,164 @@ export default function ChatsLayout({
   const supabase = createClient();
   const router = useRouter();
 
+  // Track recently accessed chats (within 2 days)
+  const isRecentlyAccessed = useCallback((chatId: string) => {
+    const recentAccess = cache.get<Record<string, number>>(CACHE_KEYS.RECENT_CHAT_ACCESS) || {};
+    const lastAccess = recentAccess[chatId];
+    if (!lastAccess) return false;
+    
+    const twoDaysAgo = Date.now() - (2 * 24 * 60 * 60 * 1000);
+    return lastAccess > twoDaysAgo;
+  }, []);
+
+  // Mark chat as accessed
+  const markChatAccessed = useCallback((chatId: string) => {
+    const recentAccess = cache.get<Record<string, number>>(CACHE_KEYS.RECENT_CHAT_ACCESS) || {};
+    recentAccess[chatId] = Date.now();
+    cache.set(CACHE_KEYS.RECENT_CHAT_ACCESS, recentAccess, CACHE_TTL.RECENT_CHAT_ACCESS);
+  }, []);
+
+  // Update unread status when current chat changes
+  useEffect(() => {
+    if (currentChatId) {
+      // Mark current chat as read and accessed
+      markChatAccessed(currentChatId);
+      
+      const timer = setTimeout(() => {
+        setUnreadChats(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(currentChatId);
+          return newSet;
+        });
+        
+        // Update last read time in cache
+        cache.set(CACHE_KEYS.LAST_READ_MESSAGES(currentChatId), Date.now(), CACHE_TTL.LAST_READ_MESSAGES);
+      }, 0);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [currentChatId, markChatAccessed]);
+
+  // Check for unread messages
+  const checkUnreadMessages = useCallback((chatId: string, lastMessageTime?: string) => {
+    if (!lastMessageTime || !user) return false;
+    
+    const lastReadTime = cache.get<number>(CACHE_KEYS.LAST_READ_MESSAGES(chatId));
+    if (!lastReadTime) {
+      // If no last read time, check if this is a new chat (created after user joined)
+      return true; // Show as unread until user opens it
+    }
+    
+    const messageTime = new Date(lastMessageTime).getTime();
+    return messageTime > lastReadTime;
+  }, [user]);
+
+  // Update unread status when chats or user changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (chats.length > 0 && user) {
+        const newUnreadChats = new Set<string>();
+        
+        chats.forEach(chat => {
+          const isUnread = chat.id !== currentChatId && checkUnreadMessages(chat.id, chat.last_message_at);
+          console.log(`Chat ${chat.id} unread:`, isUnread, 'last_message_at:', chat.last_message_at);
+          if (isUnread) {
+            newUnreadChats.add(chat.id);
+          }
+        });
+        
+        console.log('Setting unread chats:', newUnreadChats);
+        setUnreadChats(newUnreadChats);
+      }
+    }, 0);
+    
+    return () => clearTimeout(timer);
+  }, [chats, user, currentChatId, checkUnreadMessages]);
+
   // Pass messageLayout to children via cloneElement for the chat page
   const childrenWithProps = React.isValidElement(children) 
     ? React.cloneElement(children, { messageLayout } as any)
     : children;
 
+  // Clean up old chat access records (older than 2 days)
+  const cleanupOldAccessRecords = useCallback(() => {
+    const recentAccess = cache.get<Record<string, number>>(CACHE_KEYS.RECENT_CHAT_ACCESS) || {};
+    const twoDaysAgo = Date.now() - (2 * 24 * 60 * 60 * 1000);
+    
+    const filteredAccess: Record<string, number> = {};
+    Object.entries(recentAccess).forEach(([chatId, timestamp]) => {
+      if (timestamp > twoDaysAgo) {
+        filteredAccess[chatId] = timestamp;
+      }
+    });
+    
+    cache.set(CACHE_KEYS.RECENT_CHAT_ACCESS, filteredAccess, CACHE_TTL.RECENT_CHAT_ACCESS);
+  }, []);
+
   useEffect(() => {
     const fetchUserAndChats = async () => {
+      // Always show skeleton on initial load for instant UI
+      if (initialLoad) {
+        setLoading(true);
+      }
+
       const { data: { user: authUser } } = await supabase.auth.getUser();
       if (!authUser) {
         router.push("/login");
         return;
       }
 
-      const { data: profileData } = await supabase
-        .from("profiles")
-        .select("id, username, display_name, avatar_url")
-        .eq("id", authUser.id)
-        .single();
-      
-      setUser(profileData);
+      // Try to get user profile from cache first
+      const cachedProfile = cache.get<Profile>(CACHE_KEYS.USER_PROFILE);
+      let userProfile: Profile | null = cachedProfile;
 
+      if (!cachedProfile || cachedProfile.id !== authUser.id) {
+        // Fetch fresh profile data
+        const { data: profileData } = await supabase
+          .from("profiles")
+          .select("id, username, display_name, avatar_url")
+          .eq("id", authUser.id)
+          .single();
+        
+        userProfile = profileData;
+        if (profileData) {
+          cache.set(CACHE_KEYS.USER_PROFILE, profileData, CACHE_TTL.USER_PROFILE);
+        }
+      }
+
+      setUser(userProfile);
+
+      // Try to get chat list from cache first (only recently accessed chats)
+      const cachedChats = cache.get<Chat[]>(CACHE_KEYS.CHAT_LIST);
+      const recentlyAccessedChats = cachedChats?.filter(chat => isRecentlyAccessed(chat.id)) || [];
+      
+      if (recentlyAccessedChats.length > 0) {
+        setChats(recentlyAccessedChats);
+        setLoading(false);
+        setInitialLoad(false);
+        // Fetch fresh data in background
+        fetchChatsFresh(authUser.id);
+      } else {
+        // No recently accessed cached chats, fetch fresh data
+        await fetchChatsFresh(authUser.id);
+        setInitialLoad(false);
+      }
+      
+      // Set up real-time message listener
+      const cleanup = setupMessageListener(authUser.id);
+      return cleanup;
+    };
+
+    const fetchChatsFresh = async (userId: string) => {
       const { data: participantData } = await supabase
         .from("chat_participants")
         .select("chat_id")
-        .eq("user_id", authUser.id);
+        .eq("user_id", userId);
 
       if (participantData && participantData.length > 0) {
         const chatIds = participantData.map((p) => p.chat_id);
         
+        // Get chats with their latest message
         const { data: chatsData } = await supabase
           .from("chats")
           .select("*")
@@ -114,6 +250,27 @@ export default function ChatsLayout({
         if (chatsData) {
           const chatsWithParticipants = await Promise.all(
             chatsData.map(async (chat) => {
+              const cacheKey = CACHE_KEYS.CHAT_PARTICIPANTS(chat.id);
+              const cachedParticipants = cache.get<Profile[]>(cacheKey);
+              
+              // Get the latest message for this chat
+              const { data: latestMessage } = await supabase
+                .from("messages")
+                .select("created_at")
+                .eq("chat_id", chat.id)
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .single();
+              
+              if (cachedParticipants && cachedParticipants.length > 0) {
+                return {
+                  ...chat,
+                  participants: cachedParticipants,
+                  last_message_at: latestMessage?.created_at || chat.updated_at,
+                };
+              }
+
+              // Fetch fresh participant data
               const { data: participantsData } = await supabase
                 .from("chat_participants")
                 .select("user_id, profiles!inner(id, username, display_name)")
@@ -126,22 +283,128 @@ export default function ChatsLayout({
                 display_name: p.profiles.display_name,
               })) || [];
               
+              // Cache participants
+              cache.set(cacheKey, participants, CACHE_TTL.CHAT_PARTICIPANTS);
+              
               return {
                 ...chat,
                 participants,
+                last_message_at: latestMessage?.created_at || chat.updated_at,
               };
             })
           );
+          
+          console.log('Fetched chats with messages:', chatsWithParticipants);
           setChats(chatsWithParticipants);
+          
+          // Only cache recently accessed chats
+          const recentlyAccessed = chatsWithParticipants.filter(chat => isRecentlyAccessed(chat.id));
+          if (recentlyAccessed.length > 0) {
+            cache.set(CACHE_KEYS.CHAT_LIST, recentlyAccessed, CACHE_TTL.CHAT_LIST);
+          }
         }
       }
       setLoading(false);
     };
 
+    // Set up real-time listener for new messages
+    const setupMessageListener = (userId: string) => {
+      const subscription = supabase
+        .channel('new_messages')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'messages',
+          },
+          async (payload) => {
+            const newMessage = payload.new as any;
+            
+            // Check if user is a participant in this chat
+            const { data: participantCheck } = await supabase
+              .from('chat_participants')
+              .select('chat_id')
+              .eq('user_id', userId)
+              .eq('chat_id', newMessage.chat_id)
+              .single();
+            
+            if (participantCheck && newMessage.sender_id !== userId) {
+              // This is a new message for the user in a chat they're in
+              // Update the chat's last_message_at but don't reorder
+              setChats(prev => 
+                prev.map(chat => 
+                  chat.id === newMessage.chat_id 
+                    ? { ...chat, last_message_at: newMessage.created_at, updated_at: newMessage.created_at }
+                    : chat
+                )
+              );
+              
+              // Immediately update cache with new message if chat is recently accessed
+              if (isRecentlyAccessed(newMessage.chat_id)) {
+                const cachedChats = cache.get<Chat[]>(CACHE_KEYS.CHAT_LIST) || [];
+                const updatedCache = cachedChats.map(chat => 
+                  chat.id === newMessage.chat_id 
+                    ? { ...chat, last_message_at: newMessage.created_at, updated_at: newMessage.created_at }
+                    : chat
+                );
+                cache.set(CACHE_KEYS.CHAT_LIST, updatedCache, CACHE_TTL.CHAT_LIST);
+                
+                // Fetch sender profile for proper caching
+                supabase
+                  .from("profiles")
+                  .select("username, display_name, avatar_url")
+                  .eq("id", newMessage.sender_id)
+                  .single()
+                  .then(({ data: profileData }) => {
+                    // Also update the message cache for this chat
+                    const cachedMessages = cache.get<any[]>(CACHE_KEYS.CHAT_MESSAGES(newMessage.chat_id)) || [];
+                    // Add the new message to the cache
+                    const updatedMessages = [...cachedMessages, {
+                      id: newMessage.id,
+                      chat_id: newMessage.chat_id,
+                      content: newMessage.content,
+                      sender_id: newMessage.sender_id,
+                      created_at: newMessage.created_at,
+                      profiles: {
+                        username: profileData?.username || "Unknown",
+                        display_name: profileData?.display_name,
+                        avatar_url: profileData?.avatar_url
+                      }
+                    }];
+                    cache.set(CACHE_KEYS.CHAT_MESSAGES(newMessage.chat_id), updatedMessages, CACHE_TTL.CHAT_MESSAGES);
+                  });
+              }
+              
+              // Mark chat as unread if it's not the current chat
+              if (newMessage.chat_id !== currentChatId) {
+                setUnreadChats(prev => {
+                  const newSet = new Set(prev);
+                  newSet.add(newMessage.chat_id);
+                  return newSet;
+                });
+              }
+            }
+          }
+        );
+      
+      subscription.subscribe((status) => {
+        console.log("Realtime subscription status:", status);
+      });
+      
+      return () => subscription.unsubscribe();
+    };
+
+    // Clear expired cache on load and cleanup old access records
+    cache.clearExpired();
+    cleanupOldAccessRecords();
+    
     fetchUserAndChats();
-  }, [supabase, router]);
+  }, [supabase, router, cleanupOldAccessRecords]);
 
   const signOut = async () => {
+    // Clear all cache when signing out
+    cache.clear();
     await supabase.auth.signOut();
     router.push("/login");
   };
@@ -213,11 +476,18 @@ export default function ChatsLayout({
       return;
     }
 
-    setUser({
+    const updatedProfile = {
       ...user,
       username: editUsername,
       display_name: editDisplayName || undefined,
-    });
+      avatar_url: editProfilePicture || undefined,
+    };
+
+    setUser(updatedProfile);
+    
+    // Update cache with new profile data
+    cache.set(CACHE_KEYS.USER_PROFILE, updatedProfile, CACHE_TTL.USER_PROFILE);
+    
     setEditingProfile(false);
   };
 
@@ -228,6 +498,15 @@ export default function ChatsLayout({
         return;
       }
 
+      // Try cache first for user search
+      const cacheKey = CACHE_KEYS.USER_SEARCH(searchQuery);
+      const cachedResults = cache.get<Profile[]>(cacheKey);
+      
+      if (cachedResults) {
+        setSearchResults(cachedResults);
+        return;
+      }
+
       const { data } = await supabase
         .from("profiles")
         .select("id, username, display_name")
@@ -235,7 +514,13 @@ export default function ChatsLayout({
         .neq("id", user?.id || "")
         .limit(10);
 
-      setSearchResults(data || []);
+      const results = data || [];
+      setSearchResults(results);
+      
+      // Cache search results
+      if (results.length > 0) {
+        cache.set(cacheKey, results, CACHE_TTL.USER_SEARCH);
+      }
     }, 300);
     return () => clearTimeout(timeout);
   }, [searchQuery, supabase, user]);
@@ -308,6 +593,11 @@ export default function ChatsLayout({
 
       const newChat: Chat = { ...newChatData, participants };
       setChats((prev) => [newChat, ...prev]);
+      
+      // Invalidate chat list cache since we added a new chat
+      cache.delete(CACHE_KEYS.CHAT_LIST);
+      // Mark the new chat as recently accessed
+      markChatAccessed(chat.id);
     }
 
     closeModal();
@@ -335,8 +625,10 @@ export default function ChatsLayout({
 
         {/* Chat List */}
         <div className="flex-1 overflow-y-auto">
-          {loading ? (
-            <div className="p-4 text-center text-muted">Loading...</div>
+          {loading && initialLoad ? (
+            <ChatListSkeleton />
+          ) : loading && !initialLoad ? (
+            <div className="p-4 text-center text-muted">Updating...</div>
           ) : chats.length === 0 ? (
             <div className="p-8 text-center text-muted">
               <MessageSquare className="w-10 h-10 mx-auto mb-2 opacity-30" />
@@ -398,9 +690,17 @@ export default function ChatsLayout({
                             : "Just you"}
                         </div>
                       </div>
-                      <ChevronRight className={`w-4 h-4 shrink-0 ${
-                        isActive ? "text-accent" : "text-muted"
-                      }`} />
+                      <div className="flex items-center gap-2">
+                        {unreadChats.has(chat.id) && !isActive && (
+                          <>
+                            <UnreadDot />
+                            {console.log('Showing dot for chat:', chat.id)}
+                          </>
+                        )}
+                        <ChevronRight className={`w-4 h-4 shrink-0 ${
+                          isActive ? "text-accent" : "text-muted"
+                        }`} />
+                      </div>
                     </div>
                   </Link>
                 );
@@ -411,45 +711,49 @@ export default function ChatsLayout({
 
         {/* Footer - Profile Section */}
         <div className="p-4 border-t border-border">
-          <div className="flex items-center gap-3">
-            {user?.avatar_url ? (
-              <img 
-                src={user.avatar_url} 
-                alt="Profile" 
-                className="w-10 h-10 rounded-full object-cover flex-shrink-0"
-              />
-            ) : (
-              <div className="w-10 h-10 bg-border rounded-full flex items-center justify-center flex-shrink-0">
-                <span className="text-sm font-medium text-foreground">
-                  {(user?.display_name || user?.username || "?").charAt(0).toUpperCase()}
-                </span>
+          {user ? (
+            <div className="flex items-center gap-3">
+              {user.avatar_url ? (
+                <img 
+                  src={user.avatar_url} 
+                  alt="Profile" 
+                  className="w-10 h-10 rounded-full object-cover flex-shrink-0"
+                />
+              ) : (
+                <div className="w-10 h-10 bg-border rounded-full flex items-center justify-center flex-shrink-0">
+                  <span className="text-sm font-medium text-foreground">
+                    {(user.display_name || user.username || "?").charAt(0).toUpperCase()}
+                  </span>
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-foreground truncate">
+                  {user.display_name || `@${user.username}`}
+                </div>
+                <div className="text-xs text-muted truncate">
+                  @{user.username}
+                </div>
               </div>
-            )}
-            <div className="flex-1 min-w-0">
-              <div className="font-medium text-foreground truncate">
-                {user?.display_name || `@${user?.username}`}
-              </div>
-              <div className="text-xs text-muted truncate">
-                @{user?.username}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowSettingsModal(true)}
+                  className="p-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+                  title="Settings"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={signOut}
+                  className="p-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+                  title="Sign out"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setShowSettingsModal(true)}
-                className="p-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
-                title="Settings"
-              >
-                <Settings className="w-4 h-4" />
-              </button>
-              <button
-                onClick={signOut}
-                className="p-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
-                title="Sign out"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+          ) : (
+            <ProfileSkeleton />
+          )}
         </div>
       </div>
 
@@ -507,7 +811,15 @@ export default function ChatsLayout({
                 />
               </div>
 
-              {searchResults.length > 0 && (
+              {searchQuery && searchResults.length === 0 && !loading ? (
+                <div className="border border-border rounded-lg divide-y divide-border bg-background">
+                  <div className="p-3 text-center text-muted">
+                    <div className="text-sm">No users found for &quot;{searchQuery}&quot;</div>
+                  </div>
+                </div>
+              ) : searchQuery && searchResults.length === 0 && loading ? (
+                <SearchSkeleton />
+              ) : searchResults.length > 0 ? (
                 <div className="border border-border rounded-lg divide-y divide-border bg-background">
                   {searchResults.map((profile) => (
                     <button
@@ -533,7 +845,7 @@ export default function ChatsLayout({
                     </button>
                   ))}
                 </div>
-              )}
+              ) : null}
 
               {selectedUsers.length > 0 && (
                 <div>
@@ -766,6 +1078,30 @@ export default function ChatsLayout({
                       <div className="absolute right-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform"></div>
                     </div>
                   </label>
+                </div>
+              </div>
+
+              {/* Cache Management Section */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-foreground">Cache Management</h3>
+                <div className="space-y-2">
+                  <button
+                    onClick={() => {
+                      cache.clear();
+                      window.location.reload();
+                    }}
+                    className="w-full p-3 bg-background border border-border rounded-lg text-left hover:bg-card-hover transition-colors flex items-center gap-3"
+                  >
+                    <div className="w-4 h-4 text-muted">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14zM10 11v6M14 11v6"/>
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm text-foreground">Clear All Cache</div>
+                      <div className="text-xs text-muted">Remove cached data and refresh</div>
+                    </div>
+                  </button>
                 </div>
               </div>
 

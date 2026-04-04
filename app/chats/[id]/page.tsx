@@ -3,7 +3,8 @@
 import { useEffect, useState, useRef, use, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRouter, useParams } from "next/navigation";
-import { Send, Users, Settings, X, Plus, UserMinus, UserPlus, ArrowLeft, MoreVertical, Smile, Trash2, Edit2, Check, X as XIcon, Reply } from "lucide-react";
+import { Send, Users, Settings, X, Plus, UserMinus, UserPlus, ArrowLeft, MoreVertical, Smile, Trash2, Edit2, Check, X as XIcon, Reply, Pin, Paperclip, Image, Video, FileText } from "lucide-react";
+import { cache, CACHE_KEYS, CACHE_TTL } from "@/lib/cache";
 
 const MESSAGES_PER_PAGE = 50;
 const MESSAGE_BUFFER = 100; // Keep this many messages loaded at most
@@ -141,6 +142,8 @@ interface MessageItemProps {
   onToggleMenu: (id: string, isOpen: boolean) => void;
   onToggleReactionPicker: (id: string, isOpen: boolean) => void;
   formatTime: (date: string) => string;
+  renderFileAttachments: (content: string) => React.ReactNode;
+  extractTextContent: (content: string) => string;
 }
 
 function MessageItem({
@@ -168,6 +171,8 @@ function MessageItem({
   onToggleMenu,
   onToggleReactionPicker,
   formatTime,
+  renderFileAttachments,
+  extractTextContent,
 }: MessageItemProps) {
   const isMe = message.sender_id === userId;
   const prevMessage = index > 0 ? messages[index - 1] : null;
@@ -314,7 +319,14 @@ function MessageItem({
 
   // Context Menu content - shown for ALL messages
   const contextMenuContent = isMenuOpen && (
-    <div className="absolute right-0 top-0 -mt-8 flex items-center gap-1 bg-card border border-border rounded-lg shadow-lg p-1 z-20">
+    <div 
+      className="absolute right-0 -top-8 flex items-center gap-1 bg-card border border-border rounded-lg shadow-lg p-1 z-20"
+      onMouseEnter={(e) => e.stopPropagation()}
+      onMouseLeave={(e) => {
+        e.stopPropagation();
+        onToggleMenu(message.id, false);
+      }}
+    >
       <button
         onClick={(e) => { e.stopPropagation(); onToggleReactionPicker(message.id, !isReactionPickerOpen); }}
         className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
@@ -328,6 +340,22 @@ function MessageItem({
         title="Reply"
       >
         <Reply className="w-4 h-4 text-muted" />
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); console.log('Pin message'); }}
+        className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+        title="Pin message"
+      >
+        <Pin className="w-4 h-4 text-muted" />
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); console.log('Forward message'); }}
+        className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+        title="Forward message"
+      >
+        <svg className="w-4 h-4 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+        </svg>
       </button>
       {isMe && (
         <>
@@ -352,7 +380,7 @@ function MessageItem({
 
   // Message Actions Bar content - always on right side, shown for ALL messages
   const messageActionsContent = (
-    <div className={`absolute right-0 top-0 flex items-center gap-0.5 bg-card-hover border border-border rounded-md shadow-sm opacity-0 group-hover:opacity-100 transition-opacity z-10 mr-1`}>
+    <div className={`absolute right-0 -top-8 flex items-center gap-0.5 bg-card-hover border border-border rounded-md shadow-sm opacity-0 group-hover:opacity-100 transition-opacity z-10 mr-1`}>
       <button
         onClick={(e) => { e.stopPropagation(); onToggleReactionPicker(message.id, !isReactionPickerOpen); }}
         className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
@@ -360,6 +388,22 @@ function MessageItem({
       >
         <Smile className="w-4 h-4 text-muted" />
       </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onStartReply(message); }}
+        className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+        title="Reply"
+      >
+        <Reply className="w-4 h-4 text-muted" />
+      </button>
+      {isMe && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onStartEdit(message); }}
+          className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
+          title="Edit"
+        >
+          <Edit2 className="w-4 h-4 text-muted" />
+        </button>
+      )}
       <button
         onClick={(e) => { e.stopPropagation(); onToggleMenu(message.id, !isMenuOpen); }}
         className="p-1.5 hover:bg-accent/10 rounded-md transition-colors"
@@ -450,7 +494,12 @@ function MessageItem({
                 <>
                   {reactionPicker}
                   {replyPreview}
-                  <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">{message.content}</div>
+                  {renderFileAttachments(message.content)}
+                  {extractTextContent(message.content) && (
+                    <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere">
+                      {extractTextContent(message.content)}
+                    </div>
+                  )}
                   {reactionsDisplay}
                 </>
               )}
@@ -506,7 +555,12 @@ function MessageItem({
               <>
                 {reactionPicker}
                 {replyPreview}
-                <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere max-w-full">{message.content}</div>
+                {renderFileAttachments(message.content)}
+                {extractTextContent(message.content) && (
+                  <div className="leading-relaxed text-foreground break-words overflow-wrap-anywhere max-w-full">
+                    {extractTextContent(message.content)}
+                  </div>
+                )}
                 {reactionsDisplay}
               </>
             )}
@@ -585,6 +639,10 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState("");
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+  const [mediaModal, setMediaModal] = useState<{ url: string; type: string; name: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [messageLayout, setMessageLayout] = useState<"default" | "left">(() => {
     const savedLayout = typeof window !== 'undefined' ? localStorage.getItem("messageLayout") as "default" | "left" : "default";
@@ -611,6 +669,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
   const [showReactionPicker, setShowReactionPicker] = useState<string | null>(null);
   const [replyingToMessage, setReplyingToMessage] = useState<Message | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollPositionRef = useRef<number>(0);
   const isNearBottomRef = useRef(true);
   const loadedRangeRef = useRef({ start: 0, end: 0 });
@@ -686,6 +745,33 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       }
       setUserId(user.id);
 
+      // Try to get cached messages first
+      const cachedMessages = cache.get<Message[]>(CACHE_KEYS.CHAT_MESSAGES(chatId));
+      const cachedChatData = cache.get<any>(`chat_data_${chatId}`);
+      const cachedParticipants = cache.get<Participant[]>(`chat_participants_${chatId}`);
+      
+      // Show cached data immediately if available
+      if (cachedMessages && cachedMessages.length > 0 && cachedChatData && cachedParticipants) {
+        setChat(cachedChatData);
+        setParticipants(cachedParticipants);
+        setMessages(cachedMessages);
+        setPagination({
+          hasMoreOlder: cachedMessages.length >= MESSAGES_PER_PAGE,
+          hasMoreNewer: false,
+          oldestLoadedAt: cachedMessages[0]?.created_at,
+          newestLoadedAt: cachedMessages[cachedMessages.length - 1]?.created_at,
+        });
+        setLoading(false);
+        
+        // Fetch fresh data in background
+        fetchFreshChatData(user.id);
+      } else {
+        // No cache, fetch fresh data
+        await fetchFreshChatData(user.id);
+      }
+    };
+
+    const fetchFreshChatData = async (userId: string) => {
       const { data: chatData } = await supabase
         .from("chats")
         .select("*")
@@ -714,7 +800,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       }) || [];
       setParticipants(mappedParticipants);
 
-      const isParticipant = mappedParticipants.some((p) => p.id === user.id);
+      const isParticipant = mappedParticipants.some((p) => p.id === userId);
       if (!isParticipant) {
         router.push("/chats");
         return;
@@ -752,6 +838,12 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
         oldestLoadedAt: orderedMessages[0]?.created_at,
         newestLoadedAt: orderedMessages[orderedMessages.length - 1]?.created_at,
       });
+      
+      // Cache the data for instant loading next time
+      cache.set(CACHE_KEYS.CHAT_MESSAGES(chatId), orderedMessages, CACHE_TTL.CHAT_MESSAGES);
+      cache.set(`chat_data_${chatId}`, chatData, CACHE_TTL.CHAT_MESSAGES);
+      cache.set(`chat_participants_${chatId}`, mappedParticipants, CACHE_TTL.CHAT_MESSAGES);
+      
       setLoading(false);
     };
 
@@ -848,21 +940,31 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
           };
 
           setMessages((prev) => {
+            let updatedMessages;
+            
             // If this is our message with a matching client_key, replace the optimistic one
             if (msg.client_key) {
               const hasOptimistic = prev.some(
                 (m) => m.client_key === msg.client_key && m.id.startsWith("temp-")
               );
               if (hasOptimistic) {
-                return prev.map((m) =>
+                updatedMessages = prev.map((m) =>
                   m.client_key === msg.client_key
                     ? { ...newMsg, profiles: { username: "You" } }
                     : m
                 );
+              } else {
+                updatedMessages = [...prev, newMsg];
               }
+            } else {
+              // Otherwise just add it (from other users)
+              updatedMessages = [...prev, newMsg];
             }
-            // Otherwise just add it (from other users)
-            return [...prev, newMsg];
+            
+            // Update cache with new message
+            cache.set(CACHE_KEYS.CHAT_MESSAGES(chatId), updatedMessages, CACHE_TTL.CHAT_MESSAGES);
+            
+            return updatedMessages;
           });
         }
       )
@@ -996,14 +1098,98 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     }
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    setAttachedFiles(prev => [...prev, ...files]);
+    // Reset the input value so the same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    
+    const files: File[] = [];
+    
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) {
+          files.push(file);
+        }
+      }
+    }
+    
+    if (files.length > 0) {
+      e.preventDefault();
+      setAttachedFiles(prev => [...prev, ...files]);
+    }
+  };
+
+  const uploadFiles = async (files: File[]): Promise<string[]> => {
+    const fileUrls: string[] = [];
+    
+    for (const file of files) {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
+      const filePath = `${chatId}/${fileName}`;
+      
+      const { data, error } = await supabase.storage
+        .from('chat-files')
+        .upload(filePath, file);
+      
+      if (error) {
+        console.error('Error uploading file:', error);
+        continue;
+      }
+      
+      const { data: { publicUrl } } = supabase.storage
+        .from('chat-files')
+        .getPublicUrl(filePath);
+      
+      fileUrls.push(publicUrl);
+    }
+    
+    return fileUrls;
+  };
+
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !userId) return;
+    if ((!newMessage.trim() && attachedFiles.length === 0) || !userId) return;
 
     const content = newMessage.trim();
     const replyToId = replyingToMessage?.id;
     setNewMessage("");
     setReplyingToMessage(null);
+    setIsUploading(true);
+    
+    let fileUrls: string[] = [];
+    if (attachedFiles.length > 0) {
+      fileUrls = await uploadFiles(attachedFiles);
+    }
+    
+    setAttachedFiles([]);
+    setIsUploading(false);
+
+    // Create message content with file attachments
+    let messageContent = content;
+    if (fileUrls.length > 0) {
+      const fileData = attachedFiles.map((file, index) => ({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        url: fileUrls[index]
+      }));
+      
+      if (content) {
+        messageContent = content + "\n\n" + JSON.stringify({ files: fileData });
+      } else {
+        messageContent = JSON.stringify({ files: fileData });
+      }
+    }
 
     // Optimistically add message to UI
     const clientKey = `ck-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -1011,7 +1197,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     const optimisticMsg: Message = {
       id: optimisticId,
       chat_id: chatId,
-      content,
+      content: messageContent,
       sender_id: userId,
       created_at: new Date().toISOString(),
       client_key: clientKey,
@@ -1022,10 +1208,10 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
 
     const { error } = await supabase.from("messages").insert({
       chat_id: chatId,
+      content: messageContent,
       sender_id: userId,
-      content,
-      client_key: clientKey,
       reply_to: replyToId || null,
+      client_key: clientKey,
     });
 
     if (error) {
@@ -1033,6 +1219,115 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
       // Remove optimistic message on error
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
     }
+  };
+
+  // Render file attachments in messages
+  const renderFileAttachments = (content: string) => {
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed.files && Array.isArray(parsed.files)) {
+        return (
+          <div className="space-y-2">
+            {parsed.files.map((file: any, index: number) => (
+              <div key={index} className="rounded-lg overflow-hidden bg-card-hover border border-border">
+                {file.type.startsWith('image/') || file.type === 'image/gif' ? (
+                  <div 
+                    className="cursor-pointer"
+                    onClick={() => setMediaModal({ url: file.url, type: file.type, name: file.name })}
+                  >
+                    <img 
+                      src={file.url} 
+                      alt={file.name}
+                      className="w-full h-auto max-h-96 object-contain hover:opacity-90 transition-opacity"
+                    />
+                  </div>
+                ) : file.type.startsWith('video/') ? (
+                  <div 
+                    className="cursor-pointer"
+                    onClick={() => setMediaModal({ url: file.url, type: file.type, name: file.name })}
+                  >
+                    <video 
+                      src={file.url} 
+                      className="w-full h-auto max-h-96 object-contain"
+                      muted
+                      loop
+                      playsInline
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 p-3">
+                    <div className="w-10 h-10 bg-blue-500/10 rounded flex items-center justify-center flex-shrink-0">
+                      <FileText className="w-5 h-5 text-blue-500" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-foreground truncate">{file.name}</div>
+                      <div className="text-xs text-muted">
+                        {file.size < 10240 
+                          ? `${(file.size / 1024).toFixed(1)} KB`
+                          : `${(file.size / 1024 / 1024).toFixed(2)} MB`
+                        }
+                      </div>
+                    </div>
+                    <button
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        
+                        try {
+                          // Fetch the file as a blob
+                          const response = await fetch(file.url);
+                          const blob = await response.blob();
+                          
+                          // Create a blob URL
+                          const blobUrl = window.URL.createObjectURL(blob);
+                          
+                          // Create a temporary link element to trigger download
+                          const link = document.createElement('a');
+                          link.href = blobUrl;
+                          link.download = file.name;
+                          document.body.appendChild(link);
+                          link.click();
+                          document.body.removeChild(link);
+                          
+                          // Clean up the blob URL
+                          window.URL.revokeObjectURL(blobUrl);
+                        } catch (error) {
+                          console.error('Error downloading file:', error);
+                          // Fallback: open in new tab if download fails
+                          window.open(file.url, '_blank');
+                        }
+                      }}
+                      className="p-2 text-muted hover:text-accent hover:bg-accent/10 rounded-md transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      }
+    } catch (e) {
+      // Not JSON, return null to render as regular text
+    }
+    return null;
+  };
+
+  // Extract text content from message (remove file JSON)
+  const extractTextContent = (content: string) => {
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed.files && Array.isArray(parsed.files)) {
+        // Return empty string if message only contains files
+        return '';
+      }
+    } catch (e) {
+      // Not JSON, return original content
+    }
+    return content;
   };
 
   const formatTime = (date: string) => {
@@ -1206,6 +1501,10 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
         setShowMessageMenu(null);
         setShowReactionPicker(null);
       }
+      // Close plus menu when clicking outside
+      if (!target.closest('.plus-menu-container')) {
+        setShowPlusMenu(false);
+      }
     };
 
     document.addEventListener('click', handleClickOutside);
@@ -1360,7 +1659,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
           <div 
             ref={messagesContainerRef}
             onScroll={handleScroll}
-            className="flex-1 overflow-y-auto p-4"
+            className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-accent/50 scrollbar-track-transparent hover:scrollbar-thumb-accent/70"
           >
             {isLoadingOlder && (
               <div className="flex justify-center py-2">
@@ -1407,6 +1706,8 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
                   onToggleMenu={(id, isOpen) => setShowMessageMenu(isOpen ? id : null)}
                   onToggleReactionPicker={(id, isOpen) => setShowReactionPicker(isOpen ? id : null)}
                   formatTime={formatTime}
+                  renderFileAttachments={renderFileAttachments}
+                  extractTextContent={extractTextContent}
                 />
               ))
             )}
@@ -1431,26 +1732,206 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
               </button>
             </div>
           )}
-          <form onSubmit={sendMessage} className="flex gap-3 p-4">
+          <form onSubmit={sendMessage} className="flex flex-col gap-3 p-4">
+            {/* Hidden file input */}
             <input
-              type="text"
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              placeholder={replyingToMessage ? "Type your reply..." : "Type a message..."}
-              className="flex-1 px-4 py-3 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-accent text-foreground placeholder:text-muted transition-all"
-              autoFocus={!!replyingToMessage}
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,video/*,.gif,.pdf,.doc,.docx,.txt,.zip,.rar"
+              onChange={handleFileSelect}
+              className="hidden"
             />
-            <button
-              type="submit"
-              disabled={!newMessage.trim()}
-              className="px-4 py-3 bg-accent hover:bg-accent-hover text-white font-medium rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              <Send className="w-4 h-4" />
-              <span className="hidden sm:inline">Send</span>
-            </button>
+            {/* File attachments preview */}
+            {attachedFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2 p-2 bg-background border border-border rounded-lg">
+                {attachedFiles.map((file, index) => (
+                  <div key={index} className="flex items-center gap-2 bg-card-hover border border-border rounded-md p-2">
+                    <div className="flex items-center gap-2">
+                      {file.type.startsWith('image/') ? (
+                        <div className="w-8 h-8 bg-accent/10 rounded flex items-center justify-center">
+                          <svg className="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          </svg>
+                        </div>
+                      ) : file.type.startsWith('video/') ? (
+                        <div className="w-8 h-8 bg-red-500/10 rounded flex items-center justify-center">
+                          <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                        </div>
+                      ) : (
+                        <div className="w-8 h-8 bg-blue-500/10 rounded flex items-center justify-center">
+                          <Paperclip className="w-4 h-4 text-blue-500" />
+                        </div>
+                      )}
+                      <div className="flex flex-col">
+                        <span className="text-xs font-medium text-foreground truncate max-w-[150px]">{file.name}</span>
+                        <span className="text-xs text-muted">
+                          {file.size < 10240 
+                            ? `${(file.size / 1024).toFixed(1)} KB`
+                            : `${(file.size / 1024 / 1024).toFixed(2)} MB`
+                          }
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAttachedFiles(prev => prev.filter((_, i) => i !== index))}
+                      className="p-1 text-muted hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                    >
+                      <XIcon className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            <div className="flex gap-3">
+              <div className="relative flex-1 plus-menu-container">
+                <input
+                  type="text"
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  onPaste={handlePaste}
+                  placeholder={replyingToMessage ? "Type your reply..." : "Type a message..."}
+                  className="w-full px-4 py-3 pr-12 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-accent text-foreground placeholder:text-muted transition-all"
+                  autoFocus={!!replyingToMessage}
+                />
+                
+                {/* Plus Menu Button */}
+                <button
+                  type="button"
+                  onClick={() => setShowPlusMenu(!showPlusMenu)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-muted hover:text-foreground hover:bg-card-hover rounded-lg transition-colors"
+                  title="More options"
+                  disabled={isUploading}
+                >
+                  {isUploading ? (
+                    <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Plus className="w-4 h-4" />
+                  )}
+                </button>
+                
+                {/* Plus Menu Dropdown */}
+                {showPlusMenu && (
+                  <div 
+                    className="absolute top-0 right-0 bg-card border border-border rounded-lg shadow-lg p-1 z-50 min-w-[200px]"
+                    onMouseEnter={(e) => e.stopPropagation()}
+                    onMouseLeave={(e) => {
+                      e.stopPropagation();
+                      setShowPlusMenu(false);
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        fileInputRef.current?.click();
+                        setShowPlusMenu(false);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-card-hover rounded-md transition-colors text-left"
+                    >
+                      <Paperclip className="w-4 h-4 text-muted" />
+                      <span className="text-sm">Attach file</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+              
+              <button
+                type="submit"
+                disabled={(!newMessage.trim() && attachedFiles.length === 0) || isUploading}
+                className="px-4 py-3 bg-accent hover:bg-accent-hover text-white font-medium rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                <Send className="w-4 h-4" />
+                <span className="hidden sm:inline">Send</span>
+              </button>
+            </div>
           </form>
         </div>
       </div>
+
+      {/* Media Modal */}
+      {mediaModal && (
+        <div 
+          className="fixed inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onClick={(e) => {
+            // Only close if clicking directly on the backdrop (the div itself)
+            if (e.target === e.currentTarget) {
+              setMediaModal(null);
+            }
+          }}
+        >
+          <div 
+            className="relative max-w-6xl max-h-full w-full h-full flex items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Close button */}
+            <button
+              onClick={() => setMediaModal(null)}
+              className="absolute top-4 right-4 z-10 p-2 bg-white/10 backdrop-blur-sm rounded-full text-white hover:bg-white/20 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            
+            {/* Download button */}
+            <button
+              onClick={async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                try {
+                  // Fetch the file as a blob
+                  const response = await fetch(mediaModal.url);
+                  const blob = await response.blob();
+                  
+                  // Create a blob URL
+                  const blobUrl = window.URL.createObjectURL(blob);
+                  
+                  // Create a temporary link element to trigger download
+                  const link = document.createElement('a');
+                  link.href = blobUrl;
+                  link.download = mediaModal.name;
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                  
+                  // Clean up the blob URL
+                  window.URL.revokeObjectURL(blobUrl);
+                } catch (error) {
+                  console.error('Error downloading file:', error);
+                  // Fallback: open in new tab if download fails
+                  window.open(mediaModal.url, '_blank');
+                }
+              }}
+              className="absolute top-4 right-16 z-10 p-2 bg-white/10 backdrop-blur-sm rounded-full text-white hover:bg-white/20 transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+            </button>
+            
+            {/* Media content */}
+            {mediaModal.type.startsWith('image/') || mediaModal.type === 'image/gif' ? (
+              <img 
+                src={mediaModal.url} 
+                alt={mediaModal.name}
+                className="max-w-full max-h-full object-contain"
+              />
+            ) : mediaModal.type.startsWith('video/') ? (
+              <video 
+                src={mediaModal.url} 
+                controls
+                autoPlay
+                className="max-w-full max-h-full object-contain"
+              >
+                Your browser does not support the video tag.
+              </video>
+            ) : null}
+          </div>
+        </div>
+      )}
 
       {/* Group Settings Modal */}
       {showGroupSettings && (
