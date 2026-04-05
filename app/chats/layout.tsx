@@ -38,6 +38,7 @@ type Chat = {
   participants: Profile[];
   last_message_at?: string;
   updated_at?: string;
+  last_read_at?: string;
 };
 
 export default function ChatsLayout({
@@ -50,6 +51,7 @@ export default function ChatsLayout({
   const [loading, setLoading] = useState(true);
   const [initialLoad, setInitialLoad] = useState(true);
   const [unreadChats, setUnreadChats] = useState<Set<string>>(new Set());
+  const [lastReadTimes, setLastReadTimes] = useState<Record<string, string>>({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [messageLayout, setMessageLayout] = useState<"default" | "left">(() => {
@@ -106,6 +108,27 @@ export default function ChatsLayout({
       // Mark current chat as read and accessed
       markChatAccessed(currentChatId);
       
+      // Sync to database
+      const now = new Date().toISOString();
+      if (user?.id) {
+        supabase
+          .from("chat_participants")
+          .update({ last_read_at: now })
+          .eq("chat_id", currentChatId)
+          .eq("user_id", user.id)
+          .then(({ error }) => {
+            if (error) {
+              console.error("Error updating last_read_at:", error);
+            }
+          });
+      }
+      
+      // Update local state
+      setLastReadTimes(prev => ({ ...prev, [currentChatId]: now }));
+      setChats(prev => prev.map(chat => 
+        chat.id === currentChatId ? { ...chat, last_read_at: now } : chat
+      ));
+      
       const timer = setTimeout(() => {
         setUnreadChats(prev => {
           const newSet = new Set(prev);
@@ -119,21 +142,33 @@ export default function ChatsLayout({
       
       return () => clearTimeout(timer);
     }
-  }, [currentChatId, markChatAccessed]);
+  }, [currentChatId, markChatAccessed, supabase, user?.id]);
 
-  // Check for unread messages
-  const checkUnreadMessages = useCallback((chatId: string, lastMessageTime?: string) => {
+  // Check for unread messages using database last_read_at
+  const checkUnreadMessages = useCallback((chatId: string, lastMessageTime?: string, chatLastReadAt?: string) => {
     if (!lastMessageTime || !user) return false;
     
-    const lastReadTime = cache.get<number>(CACHE_KEYS.LAST_READ_MESSAGES(chatId));
+    // Use database last_read_at if available, fall back to local cache
+    const dbLastRead = chatLastReadAt || lastReadTimes[chatId];
+    const cachedLastRead = cache.get<number>(CACHE_KEYS.LAST_READ_MESSAGES(chatId));
+    
+    // Use the most recent of database or cache
+    let lastReadTime: number | null = null;
+    if (dbLastRead) {
+      lastReadTime = new Date(dbLastRead).getTime();
+    }
+    if (cachedLastRead) {
+      lastReadTime = lastReadTime ? Math.max(lastReadTime, cachedLastRead) : cachedLastRead;
+    }
+    
     if (!lastReadTime) {
-      // If no last read time, check if this is a new chat (created after user joined)
-      return true; // Show as unread until user opens it
+      // If no last read time, show as unread until user opens it
+      return true;
     }
     
     const messageTime = new Date(lastMessageTime).getTime();
     return messageTime > lastReadTime;
-  }, [user]);
+  }, [user, lastReadTimes]);
 
   // Update unread status when chats or user changes
   useEffect(() => {
@@ -142,8 +177,8 @@ export default function ChatsLayout({
         const newUnreadChats = new Set<string>();
         
         chats.forEach(chat => {
-          const isUnread = chat.id !== currentChatId && checkUnreadMessages(chat.id, chat.last_message_at);
-          console.log(`Chat ${chat.id} unread:`, isUnread, 'last_message_at:', chat.last_message_at);
+          const isUnread = chat.id !== currentChatId && checkUnreadMessages(chat.id, chat.last_message_at, chat.last_read_at);
+          console.log(`Chat ${chat.id} unread:`, isUnread, 'last_message_at:', chat.last_message_at, 'last_read_at:', chat.last_read_at);
           if (isUnread) {
             newUnreadChats.add(chat.id);
           }
@@ -248,6 +283,21 @@ export default function ChatsLayout({
           .order("updated_at", { ascending: false });
 
         if (chatsData) {
+          // Fetch last_read_at for all chats for the current user
+          const { data: participantMetaData } = await supabase
+            .from("chat_participants")
+            .select("chat_id, last_read_at")
+            .eq("user_id", userId)
+            .in("chat_id", chatIds);
+          
+          const lastReadMap: Record<string, string> = {};
+          participantMetaData?.forEach((p) => {
+            if (p.last_read_at) {
+              lastReadMap[p.chat_id] = p.last_read_at;
+            }
+          });
+          setLastReadTimes(lastReadMap);
+
           const chatsWithParticipants = await Promise.all(
             chatsData.map(async (chat) => {
               const cacheKey = CACHE_KEYS.CHAT_PARTICIPANTS(chat.id);
@@ -267,6 +317,7 @@ export default function ChatsLayout({
                   ...chat,
                   participants: cachedParticipants,
                   last_message_at: latestMessage?.created_at || chat.updated_at,
+                  last_read_at: lastReadMap[chat.id],
                 };
               }
 
@@ -290,6 +341,7 @@ export default function ChatsLayout({
                 ...chat,
                 participants,
                 last_message_at: latestMessage?.created_at || chat.updated_at,
+                last_read_at: lastReadMap[chat.id],
               };
             })
           );

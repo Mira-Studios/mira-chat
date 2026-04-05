@@ -1043,6 +1043,24 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     }
   }, [loading, messages.length]);
 
+  // Scroll to bottom when images/content changes size
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container || !isNearBottomRef.current) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (isNearBottomRef.current) {
+        container.scrollTo({
+          top: container.scrollHeight,
+          behavior: "auto",
+        });
+      }
+    });
+
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
+  }, []);
+
   const loadOlderMessages = async () => {
     if (!pagination.oldestLoadedAt || isLoadingOlder || !pagination.hasMoreOlder) return;
     
