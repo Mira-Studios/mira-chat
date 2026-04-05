@@ -1451,10 +1451,45 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
   };
 
   const formatTime = (date: string) => {
-    return new Date(date).toLocaleTimeString([], {
+    const messageDate = new Date(date);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const messageDay = new Date(messageDate.getFullYear(), messageDate.getMonth(), messageDate.getDate());
+    
+    const timeStr = messageDate.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
+    
+    // Today: just time
+    if (messageDay.getTime() === today.getTime()) {
+      return timeStr;
+    }
+    
+    // Yesterday: "Yesterday at HH:MM"
+    if (messageDay.getTime() === yesterday.getTime()) {
+      return `Yesterday at ${timeStr}`;
+    }
+    
+    // Within a week: "Monday at HH:MM"
+    const oneWeekAgo = new Date(today);
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    if (messageDay > oneWeekAgo) {
+      const dayName = messageDate.toLocaleDateString([], { weekday: 'long' });
+      return `${dayName} at ${timeStr}`;
+    }
+    
+    // Within the year: "MM/DD, HH:MM"
+    if (messageDay.getFullYear() === today.getFullYear()) {
+      const dateStr = messageDate.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
+      return `${dateStr}, ${timeStr}`;
+    }
+    
+    // After the year: "MM/DD/YYYY, HH:MM"
+    const dateStr = messageDate.toLocaleDateString([], { month: 'numeric', day: 'numeric', year: 'numeric' });
+    return `${dateStr}, ${timeStr}`;
   };
 
   // Handle message click for selection
